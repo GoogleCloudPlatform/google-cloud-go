@@ -16,11 +16,16 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
+	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,7 +34,165 @@ import (
 	storage_v1_tests "cloud.google.com/go/storage/internal/test/conformance"
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/google/go-cmp/cmp"
+	"google.golang.org/api/option"
+	raw "google.golang.org/api/storage/v1"
+	htransport "google.golang.org/api/transport/http"
 )
+
+type retryFunc func(ctx context.Context, c *Client, r retryCase) error
+
+type retryCase struct {
+	description string
+	// Instruction header to send to the emulator.
+	instructions []string
+	// Functions that will wrap the library method to call.
+	// storage.objects.patch
+	methods []string
+	// Preconditions
+	// storage.objects.patch requires this value
+	preconditionsProvided bool
+	// Number of times to send instructions
+	forcedRetries int
+	// If true, the call should succeed after a retry.
+	expectSuccess bool
+}
+
+func storageGet(ctx context.Context, c *Client, r retryCase) error {
+	o := c.Bucket(bucketName).Object(objName)
+	if r.preconditionsProvided {
+		// How do make requests without messing with forced retries?
+		//
+		_, err := o.If(c.Conditions{GenerationMatch: 0}).Attrs(ctx)
+		return err
+	} else {
+		_, err := o.Object(objName).Attrs(ctx)
+		return err
+	}
+}
+var funcMap map[string]retryFunc
+
+
+
+func TestRetryConformance(t *testing.T) {
+	funcMap = map[string]retryFunc{
+		"storage.objects.get": storageGet,
+	}
+
+	if os.Getenv("STORAGE_EMULATOR_HOST") == "" {
+		t.Skip("This test must use the testbench emulator; set STORAGE_EMULATOR_HOST to run.")
+	}
+
+	bucketName := "cjcotter-devrel-test"
+	objName := "file.txt"
+
+	rCases := []retryCase{
+		{
+			description:           "Retry Idempotent operations",
+			instructions:          []string{"return-503", "return-504"},
+			methods:               []string{"storage.objects.get"},
+			forcedRetries:         4,
+			preconditionsProvided: false,
+			expectSuccess:         true,
+		},
+		{
+			description:           "Retry Non-Idempotent operations",
+			instructions:          []string{"return-503", "return-504"},
+			methods:               []string{"storage.objects.patch"},
+			forcedRetries:         4,
+			preconditionsProvided: true,
+			expectSuccess:         true,
+		},
+		{
+			description:           "Retry Non-Idempotent operations",
+			instructions:          []string{"return-503", "return-504"},
+			methods:               []string{"storage.objects.patch"},
+			forcedRetries:         1,
+			preconditionsProvided: false,
+			expectSuccess:         false,
+		},
+	}
+
+	ctx := context.Background()
+
+	// Create non-wrapped client to use for setup steps.
+	client, err := NewClient(ctx)
+	if err != nil {
+		t.Fatalf("storage.NewClient: %v", err)
+	}
+
+	for _, rc := range rCases {
+		for _, i := range rc.instructions {
+			for _, m := range rc.methods {
+				testName := fmt.Sprintf("[%v] %v", rc.description, i)
+				t.Run(testName, func(t *testing.T) {
+					// Setup bucket and object
+					if err := client.Bucket(bucketName).Create(ctx, "myproj", &BucketAttrs{}); err != nil {
+						t.Errorf("Error creating bucket: %v", err)
+					}
+
+					w := client.Bucket(bucketName).Object(objName).NewWriter(ctx)
+					if _, err := w.Write([]byte("abcdef")); err != nil {
+						t.Errorf("Error writing object to emulator: %v", err)
+					}
+					if err := w.Close(); err != nil {
+						t.Errorf("Error writing object to emulator in Close: %v", err)
+					}
+
+					wrapped, err := wrappedClient(i, rc.forcedRetries)
+					if err != nil {
+						t.Errorf("error creating wrapped client: %v", err)
+					}
+					err = funcMap[m](ctx, wrapped, rc)
+					if rc.expectSuccess && err != nil {
+						t.Errorf("want success, got %v", err)
+					}
+					if !rc.expectSuccess && err == nil {
+						t.Errorf("want failure, got success")
+					}
+				})
+			}
+		}
+	}
+}
+
+type withInstruction struct {
+	rt      http.RoundTripper
+	instr   string
+	retries int
+}
+
+func (wi *withInstruction) RoundTrip(r *http.Request) (*http.Response, error) {
+	if wi.retries > 0 {
+		r.Header.Set("x-goog-testbench-instructions", wi.instr)
+		wi.retries -= 1
+	}
+	log.Printf("Request: %+v\nRetries: %v\n\n", r, wi.retries)
+	resp, err := wi.rt.RoundTrip(r)
+	//if err != nil{
+	//	log.Printf("Error: %+v", err)
+	//}
+	return resp, err
+}
+
+// Create custom client that sends instruction
+func wrappedClient(i string, maxRetries int) (*Client, error) {
+	ctx := context.Background()
+	base := http.DefaultTransport
+	trans, err := htransport.NewTransport(ctx, base, option.WithScopes(raw.DevstorageFullControlScope),
+		option.WithUserAgent("custom-user-agent"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create http client: %v", err)
+	}
+	c := http.Client{Transport: trans}
+
+	// Add RoundTripper to the created HTTP client.
+	wrappedTrans := &withInstruction{rt: c.Transport, instr: i, retries: maxRetries}
+	c.Transport = wrappedTrans
+
+	// Supply this client to storage.NewClient
+	client, err := NewClient(ctx, option.WithHTTPClient(&c), option.WithEndpoint("http://localhost:9000/storage/v1/"))
+	return client, err
+}
 
 func TestPostPolicyV4Conformance(t *testing.T) {
 	oldUTCNow := utcNow
