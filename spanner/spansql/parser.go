@@ -908,7 +908,7 @@ func (p *parser) eat(want ...string) bool {
 
 	for _, w := range want {
 		tok := p.next()
-		if tok.err != nil || tok.value != w {
+		if tok.err != nil || !strings.EqualFold(tok.value, w) {
 			// Mismatch.
 			*p = orig
 			return false
@@ -1832,6 +1832,23 @@ func (p *parser) parseSelect() (Select, *parseError) {
 		}
 
 		for {
+			if len(sel.From) > 0 {
+				var lhs SelectFrom = SelectFromList(sel.From)
+				if len(sel.From) == 1 {
+					lhs = sel.From[0]
+				}
+				sfj, err := p.parseJoin(lhs)
+				if err != nil {
+					return Select{}, err
+				}
+				if sfj != nil {
+					sel.From = []SelectFrom{*sfj}
+					continue
+				}
+				if !p.eat(",") {
+					break
+				}
+			}
 			from, err := p.parseSelectFrom()
 			if err != nil {
 				return Select{}, err
@@ -1846,11 +1863,6 @@ func (p *parser) parseSelect() (Select, *parseError) {
 				padTS()
 				sel.TableSamples[len(sel.TableSamples)-1] = &ts
 			}
-
-			if p.eat(",") {
-				continue
-			}
-			break
 		}
 
 		if sel.TableSamples != nil {
@@ -1917,82 +1929,22 @@ func (p *parser) parseSelectList() ([]Expr, []ID, *parseError) {
 	return list, aliases, nil
 }
 
-func (p *parser) parseSelectFrom() (SelectFrom, *parseError) {
-	debugf("parseSelectFrom: %v", p)
-
-	/*
-		from_item: {
-			table_name [ table_hint_expr ] [ [ AS ] alias ] |
-			join |
-			( query_expr ) [ table_hint_expr ] [ [ AS ] alias ] |
-			field_path |
-			{ UNNEST( array_expression ) | UNNEST( array_path ) | array_path }
-				[ table_hint_expr ] [ [ AS ] alias ] [ WITH OFFSET [ [ AS ] alias ] ] |
-			with_query_name [ table_hint_expr ] [ [ AS ] alias ]
-		}
-
-		join:
-			from_item [ join_type ] [ join_method ] JOIN  [ join_hint_expr ] from_item
-				[ ON bool_expression | USING ( join_column [, ...] ) ]
-
-		join_type:
-			{ INNER | CROSS | FULL [OUTER] | LEFT [OUTER] | RIGHT [OUTER] }
-	*/
-
-	if p.eat("UNNEST") {
-		if err := p.expect("("); err != nil {
-			return nil, err
-		}
-		e, err := p.parseExpr()
-		if err != nil {
-			return nil, err
-		}
-		if err := p.expect(")"); err != nil {
-			return nil, err
-		}
-		sfu := SelectFromUnnest{Expr: e}
-		if p.eat("AS") { // TODO: The "AS" keyword is optional.
-			alias, err := p.parseAlias()
-			if err != nil {
-				return nil, err
-			}
-			sfu.Alias = alias
-		}
-		// TODO: hint, offset
-		return sfu, nil
-	}
-
-	// A join starts with a from_item, so that can't be detected in advance.
-	// TODO: Support subquery, field_path, array_path, WITH.
-	// TODO: Verify associativity of multile joins.
-
-	tname, err := p.parseTableOrIndexOrColumnName()
-	if err != nil {
-		return nil, err
-	}
-	sf := SelectFromTable{Table: tname}
-
-	// TODO: The "AS" keyword is optional.
-	if p.eat("AS") {
-		alias, err := p.parseAlias()
-		if err != nil {
-			return nil, err
-		}
-		sf.Alias = alias
-	}
-
+// parseJoin tries to parse a join.
+// Returns nil if there is no join to parse.
+func (p *parser) parseJoin(lhs SelectFrom) (*SelectFromJoin, *parseError) {
+	debugf("parseJoin: %v", p)
 	// Look ahead to see if this is a join.
 	tok := p.next()
 	if tok.err != nil {
 		p.back()
-		return sf, nil
+		return nil, nil
 	}
 	var hashJoin bool // Special case for "HASH JOIN" syntax.
 	if tok.value == "HASH" {
 		hashJoin = true
 		tok = p.next()
 		if tok.err != nil {
-			return nil, err
+			return nil, tok.err
 		}
 	}
 	var jt JoinType
@@ -2012,12 +1964,12 @@ func (p *parser) parseSelectFrom() (SelectFrom, *parseError) {
 		}
 	} else {
 		p.back()
-		return sf, nil
+		return nil, nil
 	}
 
-	sfj := SelectFromJoin{
+	sfj := &SelectFromJoin{
 		Type: jt,
-		LHS:  sf,
+		LHS:  lhs,
 	}
 	setHint := func(k, v string) {
 		if sfj.Hints == nil {
@@ -2060,6 +2012,7 @@ func (p *parser) parseSelectFrom() (SelectFrom, *parseError) {
 		}
 	}
 
+	var err *parseError
 	sfj.RHS, err = p.parseSelectFrom()
 	if err != nil {
 		return nil, err
@@ -2082,6 +2035,71 @@ func (p *parser) parseSelectFrom() (SelectFrom, *parseError) {
 	}
 
 	return sfj, nil
+}
+
+func (p *parser) parseSelectFrom() (SelectFrom, *parseError) {
+	debugf("parseSelectFrom: %v", p)
+
+	if p.eat("UNNEST") {
+		if err := p.expect("("); err != nil {
+			return nil, err
+		}
+		e, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if err := p.expect(")"); err != nil {
+			return nil, err
+		}
+		sfu := SelectFromUnnest{Expr: e}
+		if p.eat("AS") { // TODO: The "AS" keyword is optional.
+			alias, err := p.parseAlias()
+			if err != nil {
+				return nil, err
+			}
+			sfu.Alias = alias
+		}
+		if p.eat("WITH", "OFFSET") {
+			alias := ID("offset")
+			if p.eat("AS") { // TODO: The "AS" keyword is optional.
+				alias, err = p.parseAlias()
+				if err != nil {
+					return nil, err
+				}
+			}
+			sfu.OffsetAlias = alias
+		}
+		// TODO: hint, offset
+		return sfu, nil
+	}
+
+	// A join starts with a from_item, so that can't be detected in advance.
+	// TODO: Support subquery, field_path, array_path, WITH.
+	// TODO: Verify associativity of multile joins.
+
+	tname, err := p.parseTableOrIndexOrColumnName()
+	if err != nil {
+		return nil, err
+	}
+	sf := SelectFromTable{Table: tname}
+
+	// TODO: The "AS" keyword is optional.
+	if p.eat("AS") {
+		alias, err := p.parseAlias()
+		if err != nil {
+			return nil, err
+		}
+		sf.Alias = alias
+	}
+
+	sfj, err := p.parseJoin(sf)
+	if err != nil {
+		return nil, err
+	}
+	if sfj == nil {
+		return sf, nil
+	}
+	return *sfj, nil
 }
 
 var joinKeywords = map[string]JoinType{
