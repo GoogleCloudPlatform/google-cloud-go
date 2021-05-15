@@ -2408,6 +2408,14 @@ func TestBindParamsDynamic(t *testing.T) {
 
 // Test converting nullable types to json strings.
 func TestJSONMarshal_NullTypes(t *testing.T) {
+	type Message struct {
+		Name string
+		Body string
+		Time int64
+	}
+	msg := Message{"Alice", "Hello", 1294706395881547000}
+	jsonStr := `{"Name":"Alice","Body":"Hello","Time":1294706395881547000}`
+
 	type testcase struct {
 		input  interface{}
 		expect string
@@ -2480,6 +2488,15 @@ func TestJSONMarshal_NullTypes(t *testing.T) {
 				{input: NullNumeric{}, expect: "null"},
 			},
 		},
+		{
+			"NullJSON",
+			[]testcase{
+				{input: NullJSON{msg, true}, expect: jsonStr},
+				{input: &NullJSON{msg, true}, expect: jsonStr},
+				{input: &NullJSON{msg, false}, expect: "null"},
+				{input: NullJSON{}, expect: "null"},
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, tc := range test.cases {
@@ -2495,6 +2512,8 @@ func TestJSONMarshal_NullTypes(t *testing.T) {
 
 // Test converting json strings to nullable types.
 func TestJSONUnmarshal_NullTypes(t *testing.T) {
+	jsonStr := `{"Body":"Hello","Name":"Alice","Time":1294706395881547000}`
+
 	type testcase struct {
 		input       []byte
 		got         interface{}
@@ -2578,6 +2597,16 @@ func TestJSONUnmarshal_NullTypes(t *testing.T) {
 				{input: []byte(`"1234.123456789`), got: NullNumeric{}, isNull: true, expect: nullString, expectError: true},
 			},
 		},
+		{
+			"NullJSON",
+			[]testcase{
+				{input: []byte(jsonStr), got: NullJSON{}, isNull: false, expect: jsonStr, expectError: false},
+				{input: []byte("null"), got: NullJSON{}, isNull: true, expect: nullString, expectError: false},
+				{input: nil, got: NullJSON{}, isNull: true, expect: nullString, expectError: true},
+				{input: []byte(""), got: NullJSON{}, isNull: true, expect: nullString, expectError: true},
+				{input: []byte(`{invalid_json_string}`), got: NullJSON{}, isNull: true, expect: nullString, expectError: true},
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			for _, tc := range test.cases {
@@ -2601,6 +2630,9 @@ func TestJSONUnmarshal_NullTypes(t *testing.T) {
 					err := json.Unmarshal(tc.input, &v)
 					expectUnmarshalNullableTypes(t, err, v, tc.isNull, tc.expect, tc.expectError)
 				case NullNumeric:
+					err := json.Unmarshal(tc.input, &v)
+					expectUnmarshalNullableTypes(t, err, v, tc.isNull, tc.expect, tc.expectError)
+				case NullJSON:
 					err := json.Unmarshal(tc.input, &v)
 					expectUnmarshalNullableTypes(t, err, v, tc.isNull, tc.expect, tc.expectError)
 				default:
