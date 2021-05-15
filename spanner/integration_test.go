@@ -18,6 +18,7 @@ package spanner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -108,6 +109,8 @@ var (
 				DateArray	ARRAY<DATE>,
 				Timestamp	TIMESTAMP,
 				TimestampArray	ARRAY<TIMESTAMP>,
+				Numeric		NUMERIC,
+				NumericArray	ARRAY<NUMERIC>
 			) PRIMARY KEY (RowID)`,
 	}
 
@@ -164,6 +167,8 @@ var (
 						DateArray	ARRAY<DATE>,
 						Timestamp	TIMESTAMP,
 						TimestampArray	ARRAY<TIMESTAMP>,
+						Numeric		NUMERIC,
+						NumericArray	ARRAY<NUMERIC>
 					) PRIMARY KEY (RowID)`,
 	}
 
@@ -1543,21 +1548,22 @@ func TestIntegration_BasicTypes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	stmts := singerDBStatements
-	stmts = []string{
-		`CREATE TABLE Singers (
+	if !isEmulatorEnvSet() {
+		stmts = []string{
+			`CREATE TABLE Singers (
 					SingerId	INT64 NOT NULL,
 					FirstName	STRING(1024),
 					LastName	STRING(1024),
 					SingerInfo	BYTES(MAX)
 				) PRIMARY KEY (SingerId)`,
-		`CREATE INDEX SingerByName ON Singers(FirstName, LastName)`,
-		`CREATE TABLE Accounts (
+			`CREATE INDEX SingerByName ON Singers(FirstName, LastName)`,
+			`CREATE TABLE Accounts (
 					AccountId	INT64 NOT NULL,
 					Nickname	STRING(100),
 					Balance		INT64 NOT NULL,
 				) PRIMARY KEY (AccountId)`,
-		`CREATE INDEX AccountByNickname ON Accounts(Nickname) STORING (Balance)`,
-		`CREATE TABLE Types (
+			`CREATE INDEX AccountByNickname ON Accounts(Nickname) STORING (Balance)`,
+			`CREATE TABLE Types (
 					RowID		INT64 NOT NULL,
 					String		STRING(MAX),
 					StringArray	ARRAY<STRING(MAX)>,
@@ -1574,8 +1580,11 @@ func TestIntegration_BasicTypes(t *testing.T) {
 					Timestamp	TIMESTAMP,
 					TimestampArray	ARRAY<TIMESTAMP>,
 					Numeric		NUMERIC,
-					NumericArray	ARRAY<NUMERIC>
+					NumericArray	ARRAY<NUMERIC>,
+					JSON		JSON,
+					JSONArray	ARRAY<JSON>
 				) PRIMARY KEY (RowID)`,
+		}
 	}
 	client, _, cleanup := prepareIntegrationTest(ctx, t, DefaultSessionPoolConfig, stmts)
 	defer cleanup()
@@ -1594,6 +1603,16 @@ func TestIntegration_BasicTypes(t *testing.T) {
 	n2p, _ := (&big.Rat{}).SetString("123456789/1000000000")
 	n1 := *n1p
 	n2 := *n2p
+
+	type Message struct {
+		Name string
+		Body string
+		Time int64
+	}
+	msg := Message{"Alice", "Hello", 1294706395881547000}
+	jsonStr := `{"Name":"Alice","Body":"Hello","Time":1294706395881547000}`
+	var unmarshaledJSONstruct interface{}
+	json.Unmarshal([]byte(jsonStr), &unmarshaledJSONstruct)
 
 	tests := []struct {
 		col  string
@@ -1697,6 +1716,24 @@ func TestIntegration_BasicTypes(t *testing.T) {
 		{col: "NumericArray", val: []NullNumeric(nil)},
 		{col: "NumericArray", val: []NullNumeric{}},
 		{col: "NumericArray", val: []NullNumeric{{n1, true}, {n2, true}, {}}},
+	}
+
+	if !isEmulatorEnvSet() {
+		tests = append(tests, []struct {
+			col  string
+			val  interface{}
+			want interface{}
+		}{
+			{col: "JSON", val: msg, want: msg},
+			{col: "JSON", val: msg, want: NullJSON{unmarshaledJSONstruct, true}},
+			{col: "JSON", val: NullJSON{msg, true}, want: msg},
+			{col: "JSON", val: NullJSON{msg, true}, want: NullJSON{unmarshaledJSONstruct, true}},
+			{col: "JSON", val: NullJSON{msg, false}},
+			{col: "JSON", val: nil, want: NullJSON{}},
+			{col: "JSONArray", val: []NullJSON(nil)},
+			{col: "JSONArray", val: []NullJSON{}},
+			{col: "JSONArray", val: []NullJSON{{msg, true}, {msg, true}, {}}},
+		}...)
 	}
 
 	// Write rows into table first.
