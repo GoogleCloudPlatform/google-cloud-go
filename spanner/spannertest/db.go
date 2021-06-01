@@ -38,13 +38,14 @@ import (
 
 	"cloud.google.com/go/civil"
 	"cloud.google.com/go/spanner/spansql"
+	"github.com/google/btree"
 )
 
 type database struct {
 	mu      sync.Mutex
 	lastTS  time.Time // last commit timestamp
 	tables  map[spansql.ID]*table
-	indexes map[spansql.ID]struct{} // only record their existence
+	indexes map[spansql.ID]*index
 
 	rwMu sync.Mutex // held by read-write transactions
 }
@@ -61,7 +62,8 @@ type table struct {
 	pkDesc    []bool             // whether each primary key column is in descending order
 
 	// Rows are stored in primary key order.
-	rows []row
+	rows    []row
+	indexes []*index
 }
 
 // colInfo represents information about a column in a table or result set.
@@ -71,6 +73,20 @@ type colInfo struct {
 	NotNull  bool            // only set for table columns
 	AggIndex int             // Index+1 of SELECT list for which this is an aggregate value.
 	Alias    spansql.PathExp // an alternate name for this column (result sets only)
+}
+
+type index struct {
+	table *table
+
+	indexedCols map[int]bool // whether each column in the table is indexed; map index corresponds to the ordering of table.cols
+	storingCols map[int]bool // whether each column in the table is stored; map index corresponds to the ordering of table.cols
+
+	// Information about the index columns.
+	cols     []int              // which columns are indexed; these are array indices into table.cols
+	colIndex map[spansql.ID]int // col name to index
+	desc     []bool             // whether each indexed column is in descending order
+
+	tree *btree.BTree // the btree structure that holds the index rows
 }
 
 // commitTimestampSentinel is a sentinel value for TIMESTAMP fields with allow_commit_timestamp=true.
@@ -237,6 +253,89 @@ func (d *database) GetDDL() []spansql.DDLStmt {
 	return stmts
 }
 
+// indexRow is a logical row in an index.
+type indexRow struct {
+	i    *index // the index this row belongs to
+	r    row    // a representative row in the index, expected to be one of the rows of the indexed table
+	rows []row  // the rows in the underlying table that map to this same index key
+
+	isSearch bool // when true, indicates that r contains a search key instead of a representative row
+}
+
+func (r *indexRow) item(j int) (interface{}, bool) {
+	if j >= len(r.r) || j >= len(r.i.cols) {
+		return nil, false
+	}
+	if r.isSearch {
+		return r.r[j], true
+	}
+	return r.r[r.i.cols[j]], true
+}
+
+func (r *indexRow) lessThan(than *indexRow, inclusive bool) bool {
+	for j := range r.i.cols {
+		left, ok := r.item(j)
+		if !ok {
+			return !r.i.desc[j] || inclusive
+		}
+		right, ok := than.item(j)
+		if !ok {
+			return r.i.desc[j] || inclusive
+		}
+		n := compareVals(left, right)
+		if n < 0 {
+			return !r.i.desc[j]
+		}
+		if n > 0 {
+			return r.i.desc[j]
+		}
+	}
+	return inclusive
+}
+
+func (r *indexRow) Less(than btree.Item) bool {
+	return r.lessThan(than.(*indexRow), false)
+}
+
+func (r *indexRow) LessOrEqual(than btree.Item) bool {
+	return r.lessThan(than.(*indexRow), true)
+}
+
+func (r *indexRow) searchRows(find row) (int, bool) {
+	t := r.i.table
+	var found bool
+	j := sort.Search(len(r.rows), func(i int) bool {
+		res := compareValLists(r.rows[i][:t.pkCols], find[:t.pkCols], t.pkDesc)
+		if res == 0 {
+			found = true
+		}
+		return res >= 0
+	})
+	return j, found
+}
+
+func (r *indexRow) insertRow(v row) bool {
+	j, found := r.searchRows(v)
+	if !found {
+		r.rows = append(r.rows, nil)
+		copy(r.rows[j+1:], r.rows[j:])
+		r.rows[j] = v
+	}
+	return !found
+}
+
+func (r *indexRow) deleteRow(v row) bool {
+	j, found := r.searchRows(v)
+	if found {
+		copy(r.rows[j:], r.rows[j+1:])
+		r.rows = r.rows[:len(r.rows)-1]
+		if len(r.rows) > 0 {
+			r.r = r.rows[0]
+		}
+	}
+	return found
+}
+
 func (d *database) ApplyDDL(stmt spansql.DDLStmt) *status.Status {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -246,7 +345,7 @@ func (d *database) ApplyDDL(stmt spansql.DDLStmt) *status.Status {
 		d.tables = make(map[spansql.ID]*table)
 	}
 	if d.indexes == nil {
-		d.indexes = make(map[spansql.ID]struct{})
+		d.indexes = make(map[spansql.ID]*index)
 	}
 
 	switch stmt := stmt.(type) {
@@ -302,7 +401,48 @@ func (d *database) ApplyDDL(stmt spansql.DDLStmt) *status.Status {
 		if _, ok := d.indexes[stmt.Name]; ok {
 			return status.Newf(codes.AlreadyExists, "index %s already exists", stmt.Name)
 		}
-		d.indexes[stmt.Name] = struct{}{}
+		t, ok := d.tables[stmt.Table]
+		if !ok {
+			return status.Newf(codes.NotFound, "no table named %s", stmt.Table)
+		}
+		cols := make([]int, len(stmt.Columns))
+		desc := make([]bool, len(stmt.Columns))
+		colIndex := make(map[spansql.ID]int, len(stmt.Columns))
+		indexed := make(map[int]bool, len(stmt.Columns))
+		storing := make(map[int]bool, len(stmt.Storing)+t.pkCols)
+		for j := range stmt.Columns {
+			v, ok := t.colIndex[stmt.Columns[j].Column]
+			if !ok {
+				return status.Newf(codes.NotFound, "no column named %s in table %s", stmt.Columns[j].Column, stmt.Table)
+			}
+			cols[j] = v
+			desc[j] = stmt.Columns[j].Desc
+			colIndex[stmt.Columns[j].Column] = v
+			indexed[v] = true
+		}
+		for j := range stmt.Storing {
+			v, ok := t.colIndex[stmt.Columns[j].Column]
+			if !ok {
+				return status.Newf(codes.NotFound, "no column named %s in table %s", stmt.Columns[j].Column, stmt.Table)
+			}
+			storing[v] = true
+		}
+		// Primary key columns are implicitly stored.
+		for j := 0; j < t.pkCols; j++ {
+			storing[j] = true
+		}
+		stor := btree.New(2)
+		idx := &index{
+			table:       t,
+			cols:        cols,
+			indexedCols: indexed,
+			storingCols: storing,
+			colIndex:    colIndex,
+			desc:        desc,
+			tree:        stor,
+		}
+		d.indexes[stmt.Name] = idx
+		t.indexes = append(t.indexes, idx)
 		return nil
 	case *spansql.DropTable:
 		if _, ok := d.tables[stmt.Name]; !ok {
@@ -352,6 +492,17 @@ func (d *database) table(tbl spansql.ID) (*table, error) {
 	t, ok := d.tables[tbl]
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "no table named %s", tbl)
+	}
+	return t, nil
+}
+
+func (d *database) index(idx spansql.ID) (*index, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	t, ok := d.indexes[idx]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "no index named %s", idx)
 	}
 	return t, nil
 }
@@ -443,9 +594,7 @@ func (d *database) Update(tx *transaction, tbl spansql.ID, cols []spansql.ID, va
 			return status.Errorf(codes.NotFound, "row not in table")
 		}
 
-		for _, i := range colIndexes {
-			t.rows[rowNum][i] = r[i]
-		}
+		t.updateRow(rowNum, r, colIndexes)
 		return nil
 	})
 }
@@ -458,10 +607,7 @@ func (d *database) InsertOrUpdate(tx *transaction, tbl spansql.ID, cols []spansq
 			// New row; do an insert.
 			t.insertRow(rowNum, r)
 		} else {
-			// Existing row; do an update.
-			for _, i := range colIndexes {
-				t.rows[rowNum][i] = r[i]
-			}
+			t.updateRow(rowNum, r, colIndexes)
 		}
 		return nil
 	})
@@ -495,8 +641,7 @@ func (d *database) Delete(tx *transaction, table spansql.ID, keys []*structpb.Li
 		// Not an error if the key does not exist.
 		rowNum, found := t.rowForPK(pk)
 		if found {
-			copy(t.rows[rowNum:], t.rows[rowNum+1:])
-			t.rows = t.rows[:len(t.rows)-1]
+			t.deleteRows(rowNum, rowNum+1)
 		}
 	}
 
@@ -510,10 +655,7 @@ func (d *database) Delete(tx *transaction, table spansql.ID, keys []*structpb.Li
 			return err
 		}
 		startRow, endRow := t.findRange(r)
-		if n := endRow - startRow; n > 0 {
-			copy(t.rows[startRow:], t.rows[endRow:])
-			t.rows = t.rows[:len(t.rows)-n]
-		}
+		t.deleteRows(startRow, endRow)
 	}
 
 	return nil
@@ -539,6 +681,61 @@ func (d *database) readTable(table spansql.ID, cols []spansql.ID, f func(*table,
 		ri.cols = append(ri.cols, t.cols[i])
 	}
 	return ri, f(t, ri, colIndexes)
+}
+
+// key constructs the internal representation of an index key.
+// The list of given values must be in 1:1 correspondence with the key fields of the index.
+func (i *index) key(values []*structpb.Value) ([]interface{}, error) {
+	if len(values) != len(i.cols) {
+		return nil, status.Errorf(codes.InvalidArgument, "key length mismatch: got %d values, index has %d", len(values), len(i.cols))
+	}
+	if len(i.cols) == 0 {
+		return nil, nil
+	}
+	t := i.table
+	var res []interface{}
+	for j, value := range values {
+		v, err := valForType(value, t.cols[i.cols[j]].Type)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, v)
+	}
+	return res, nil
+}
+
+// readIndex executes a read option (Read, ReadAll) from a secondary index.
+func (d *database) readIndex(tbl, idx spansql.ID, cols []spansql.ID, f func(*index, *rawIter, []int) error) (*rawIter, error) {
+	i, err := d.index(idx)
+	if err != nil {
+		return nil, err
+	}
+
+	t, err := d.table(tbl)
+	if err != nil {
+		return nil, err
+	}
+
+	if t != i.table {
+		return nil, status.Errorf(codes.FailedPrecondition, "Index %s is not an index on %s.", idx, tbl)
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	colIndexes, err := t.colIndexes(cols)
+	if err != nil {
+		return nil, err
+	}
+
+	ri := &rawIter{}
+	for _, j := range colIndexes {
+		ri.cols = append(ri.cols, t.cols[j])
+		if !i.columnIncluded(j) {
+			return nil, status.Errorf(codes.Unimplemented, "Reading non-indexed columns using an index is not supported. Consider adding %s to the index using a STORING clause.", t.cols[j].Name)
+		}
+	}
+	return ri, f(i, ri, colIndexes)
 }
 
 func (d *database) Read(tbl spansql.ID, cols []spansql.ID, keys []*structpb.ListValue, keyRanges keyRangeList, limit int64) (rowIter, error) {
@@ -617,6 +814,79 @@ func (d *database) ReadAll(tbl spansql.ID, cols []spansql.ID, limit int64) (*raw
 	})
 }
 
+func (d *database) IndexRead(tbl, idx spansql.ID, cols []spansql.ID, keys []*structpb.ListValue, keyRanges keyRangeList, limit int64) (rowIter, error) {
+	return d.readIndex(tbl, idx, cols, func(i *index, ri *rawIter, colIndexes []int) error {
+		// "If the same key is specified multiple times in the set (for
+		// example if two ranges, two keys, or a key and a range
+		// overlap), Cloud Spanner behaves as if the key were only
+		// specified once."
+		done := make(map[*indexRow]bool) // row numbers we've included in ri.
+
+		add := func(row *indexRow) bool {
+			if row == nil || done[row] {
+				return true
+			}
+			done[row] = true
+			for _, r := range row.rows {
+				if limit > 0 && len(ri.rows) >= int(limit) {
+					return false
+				}
+				ri.add(r, colIndexes)
+			}
+			return true
+		}
+		// Specific keys.
+		for _, key := range keys {
+			indexKey, err := i.key(key.Values)
+			if err != nil {
+				return err
+			}
+			// Not an error if the key does not exist.
+			row := i.rowForKey(indexKey)
+			if !add(row) {
+				return nil
+			}
+		}
+
+		// Key ranges.
+		for _, r := range keyRanges {
+			var err error
+			r.startKey, err = i.keyPrefix(r.start.Values)
+			if err != nil {
+				return err
+			}
+			r.endKey, err = i.keyPrefix(r.end.Values)
+			if err != nil {
+				return err
+			}
+			n := len(ri.rows)
+			if !i.doWithRange(r, add) {
+				// Rows were added in reverse order. Flip them.
+				a := ri.rows[n:]
+				for i, j := 0, len(a)-1; i < j; i, j = i+1, j-1 {
+					a[i], a[j] = a[j], a[i]
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (d *database) IndexReadAll(tbl, idx spansql.ID, cols []spansql.ID, limit int64) (*rawIter, error) {
+	return d.readIndex(tbl, idx, cols, func(i *index, ri *rawIter, colIndexes []int) error {
+		i.doWithRange(&keyRange{}, func(row *indexRow) bool {
+			for _, r := range row.rows {
+				ri.add(r, colIndexes)
+				if limit > 0 && len(ri.rows) >= int(limit) {
+					return false
+				}
+			}
+			return true
+		})
+		return nil
+	})
+}
+
 func (t *table) addColumn(cd spansql.ColumnDef, newTable bool) *status.Status {
 	if !newTable && cd.NotNull {
 		return status.Newf(codes.InvalidArgument, "new non-key columns cannot be NOT NULL")
@@ -630,8 +900,14 @@ func (t *table) addColumn(cd spansql.ColumnDef, newTable bool) *status.Status {
 			// TODO: what happens in this case?
 			return status.Newf(codes.Unimplemented, "can't add NOT NULL columns to non-empty tables yet")
 		}
+		for _, idx := range t.indexes {
+			idx.clear()
+		}
 		for i := range t.rows {
 			t.rows[i] = append(t.rows[i], nil)
+			for _, idx := range t.indexes {
+				idx.insertRow(t.rows[i])
+			}
 		}
 	}
 
@@ -650,7 +926,6 @@ func (t *table) addColumn(cd spansql.ColumnDef, newTable bool) *status.Status {
 
 func (t *table) dropColumn(name spansql.ID) *status.Status {
 	// Only permit dropping non-key columns that aren't part of a secondary index.
-	// We don't support indexes, so only check that it isn't part of the primary key.
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -663,6 +938,11 @@ func (t *table) dropColumn(name spansql.ID) *status.Status {
 	if ci < t.pkCols {
 		// TODO: What's the right response code?
 		return status.Newf(codes.InvalidArgument, "can't drop primary key column %q", name)
+	}
+	for _, idx := range t.indexes {
+		if idx.columnIncluded(ci) {
+			return status.Newf(codes.InvalidArgument, "can't drop indexed column %q", name)
+		}
 	}
 
 	// Remove from cols and colIndex, and renumber colIndex and origIndex.
@@ -679,9 +959,18 @@ func (t *table) dropColumn(name spansql.ID) *status.Status {
 		}
 	}
 
-	// Drop data.
+	// Clear indexes and adjust structure.
+	for _, idx := range t.indexes {
+		idx.clear()
+		idx.removedTableColumn(pre)
+	}
+
+	// Rebuild rows and indexes.
 	for i := range t.rows {
 		t.rows[i] = append(t.rows[i][:ci], t.rows[i][ci+1:]...)
+		for _, idx := range t.indexes {
+			idx.insertRow(t.rows[i])
+		}
 	}
 
 	return nil
@@ -765,6 +1054,69 @@ func (t *table) insertRow(rowNum int, r row) {
 	t.rows = append(t.rows, nil)
 	copy(t.rows[rowNum+1:], t.rows[rowNum:])
 	t.rows[rowNum] = r
+	for _, idx := range t.indexes {
+		idx.insertRow(r)
+	}
+}
+
+func (t *table) updateRow(rowNum int, r row, colIndexes []int) {
+	var updatedIndexes []int
+	for j, idx := range t.indexes {
+		for _, c := range colIndexes {
+			if idx.indexedCols[c] {
+				idx.deleteRow(t.rows[rowNum])
+				updatedIndexes = append(updatedIndexes, j)
+				break
+			}
+		}
+	}
+	for _, i := range colIndexes {
+		t.rows[rowNum][i] = r[i]
+	}
+	for _, j := range updatedIndexes {
+		idx := t.indexes[j]
+		idx.insertRow(t.rows[rowNum])
+	}
+}
+
+func (t *table) deleteRows(startRow, endRow int) {
+	n := endRow - startRow
+	if n <= 0 {
+		return
+	}
+	for j := startRow; j < endRow; j++ {
+		for _, idx := range t.indexes {
+			idx.deleteRow(t.rows[j])
+		}
+	}
+	copy(t.rows[startRow:], t.rows[endRow:])
+	t.rows = t.rows[:len(t.rows)-n]
+}
+
+func (i *index) insertRow(r row) {
+	item := &indexRow{
+		i:    i,
+		r:    r,
+		rows: []row{r},
+	}
+	if existing := i.tree.Get(item); existing != nil {
+		existing.(*indexRow).insertRow(r)
+	} else {
+		i.tree.ReplaceOrInsert(item)
+	}
+}
+
+func (i *index) deleteRow(r row) {
+	item := &indexRow{
+		i: i,
+		r: r,
+	}
+	if existing := i.tree.Get(item); existing != nil {
+		ir := existing.(*indexRow)
+		if ir.deleteRow(r) && len(ir.rows) == 0 {
+			i.tree.Delete(item)
+		}
+	}
 }
 
 // findRange finds the rows included in the key range,
@@ -791,6 +1143,69 @@ func (t *table) findRange(r *keyRange) (int, int) {
 	}
 
 	return startRow, endRow
+}
+
+// doWithRange finds the rows included in the key range and executes function f on each, stopping if f returns false.
+// If r.endKey is populated but r.startKey is not, doWithRange will return false and f will be called with index rows
+// in reverse order because the index must be read descending. Callers may use this return value to reverse results as
+// needed; this could be made to use a stack instead if limit logic were pushed into this function or we wouldn't mind
+// copying far more rows than necessary to satisfy a limit read.
+// Returns true if results are ordered properly and false if reversed.
+func (i *index) doWithRange(r *keyRange, f func(row *indexRow) bool) bool {
+	hasStart, hasEnd := r != nil && len(r.startKey) > 0, r != nil && len(r.endKey) > 0
+	if hasStart {
+		start := &indexRow{
+			i:        i,
+			r:        row(r.startKey),
+			isSearch: true,
+		}
+		var stop *indexRow
+		if hasEnd {
+			stop = &indexRow{
+				i:        i,
+				r:        row(r.endKey),
+				isSearch: true,
+			}
+		}
+		i.tree.AscendRange(start, nil, func(item btree.Item) bool {
+			if !r.startClosed && !start.Less(item) {
+				return true
+			}
+			if stop != nil {
+				if r.endClosed {
+					if !item.(*indexRow).LessOrEqual(stop) {
+						return false
+					}
+				} else {
+					if !item.Less(stop) {
+						return false
+					}
+				}
+
+			}
+			return f(item.(*indexRow))
+		})
+	} else {
+		if hasEnd {
+			end := &indexRow{
+				i:        i,
+				r:        row(r.endKey),
+				isSearch: true,
+			}
+			i.tree.DescendLessOrEqual(end, func(item btree.Item) bool {
+				if !r.endClosed && !item.Less(end) {
+					return true
+				}
+				return f(item.(*indexRow))
+			})
+			return false
+		} else {
+			i.tree.Ascend(func(item btree.Item) bool {
+				return f(item.(*indexRow))
+			})
+		}
+	}
+	return true
 }
 
 // colIndexes returns the indexes for the named columns.
@@ -846,6 +1261,75 @@ func (t *table) rowForPK(pk []interface{}) (row int, found bool) {
 		return i, false
 	}
 	return i, rowEqual(pk, t.rows[i][:t.pkCols])
+}
+
+// rowForKey returns the row for the given index key
+func (i *index) rowForKey(key []interface{}) *indexRow {
+	if len(key) != len(i.cols) {
+		panic(fmt.Sprintf("key length mismatch: got %d values, index has %d", len(key), len(i.cols)))
+	}
+
+	item := &indexRow{
+		i:        i,
+		r:        row(key),
+		isSearch: true,
+	}
+	existing := i.tree.Get(item)
+	if existing == nil {
+		return nil
+	}
+	return existing.(*indexRow)
+}
+
+// keyPrefix constructs the internal representation of a key prefix.
+func (i *index) keyPrefix(values []*structpb.Value) ([]interface{}, error) {
+	if len(values) > len(i.cols) {
+		return nil, status.Errorf(codes.InvalidArgument, "key length too long: got %d values, index has %d", len(values), len(i.cols))
+	}
+
+	var pk []interface{}
+	for j, value := range values {
+		v, err := valForType(value, i.table.cols[i.cols[j]].Type)
+		if err != nil {
+			return nil, err
+		}
+		pk = append(pk, v)
+	}
+	return pk, nil
+}
+
+func (i *index) clear() {
+	i.tree.Clear(true)
+}
+
+// removedTableColumn adjusts the index data structure to account for the removal of a table column.
+func (i *index) removedTableColumn(columnIndex int) {
+	for j := range i.indexedCols {
+		if j > columnIndex {
+			delete(i.indexedCols, j)
+			i.indexedCols[j-1] = true
+		}
+	}
+	for j := range i.storingCols {
+		if j > columnIndex {
+			delete(i.storingCols, j)
+			i.storingCols[j-1] = true
+		}
+	}
+	for c, j := range i.colIndex {
+		if j > columnIndex {
+			i.colIndex[c]--
+		}
+	}
+	for n, j := range i.cols {
+		if j > columnIndex {
+			i.cols[n]--
+		}
+	}
+}
+
+func (i *index) columnIncluded(j int) bool {
+	return i.indexedCols[j] || i.storingCols[j]
 }
 
 // rowCmp compares two rows, returning -1/0/+1.
@@ -1012,8 +1496,7 @@ func (d *database) Execute(stmt spansql.DMLStmt, params queryParams) (int, error
 				return 0, err
 			}
 			if b != nil && *b {
-				copy(t.rows[i:], t.rows[i+1:])
-				t.rows = t.rows[:len(t.rows)-1]
+				t.deleteRows(i, i+1)
 				n++
 				continue
 			}
@@ -1051,7 +1534,7 @@ func (d *database) Execute(stmt spansql.DMLStmt, params queryParams) (int, error
 		}
 
 		n := 0
-		values := make(row, len(stmt.Items)) // scratch space for new values
+		values := make(row, len(t.cols)) // scratch space for new values
 		for i := 0; i < len(t.rows); i++ {
 			ec.row = t.rows[i]
 			b, err := ec.evalBoolExpr(stmt.Where)
@@ -1060,7 +1543,7 @@ func (d *database) Execute(stmt spansql.DMLStmt, params queryParams) (int, error
 			}
 			if b != nil && *b {
 				// Compute every update item.
-				for j := range dstIndex {
+				for j, c := range dstIndex {
 					if expr[j] == nil { // DEFAULT
 						values[j] = nil
 						continue
@@ -1069,12 +1552,9 @@ func (d *database) Execute(stmt spansql.DMLStmt, params queryParams) (int, error
 					if err != nil {
 						return 0, err
 					}
-					values[j] = v
+					values[c] = v
 				}
-				// Write them to the row.
-				for j, v := range values {
-					t.rows[i][dstIndex[j]] = v
-				}
+				t.updateRow(i, values, dstIndex)
 				n++
 			}
 		}
