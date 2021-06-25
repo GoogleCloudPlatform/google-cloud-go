@@ -1,5 +1,24 @@
 # Changes
 
+## [1.12.0](https://www.github.com/googleapis/google-cloud-go/compare/pubsub/v1.11.0...pubsub/v1.12.0) (2021-06-23)
+
+
+### Features
+
+* **pubsub/pstest:** add channel to support user-defined publish responses ([#4251](https://www.github.com/googleapis/google-cloud-go/issues/4251)) ([e1304f4](https://www.github.com/googleapis/google-cloud-go/commit/e1304f435fed4a767f4a652f32f1386979ff794f))
+
+
+### Bug Fixes
+
+* **pubsub:** fix memory leak issue in publish scheduler ([#4282](https://www.github.com/googleapis/google-cloud-go/issues/4282)) ([22ffc18](https://www.github.com/googleapis/google-cloud-go/commit/22ffc18e522c0f943db57f8c943e7356067bedfd))
+
+## [1.11.0](https://www.github.com/googleapis/google-cloud-go/compare/pubsub/v1.10.3...pubsub/v1.11.0) (2021-05-27)
+
+
+### Features
+
+* **pubsub:** add flush method to topic ([#2863](https://www.github.com/googleapis/google-cloud-go/issues/2863)) ([825ddd6](https://www.github.com/googleapis/google-cloud-go/commit/825ddd692363eb2dd8cd253cc5976867e432f547))
+
 ### [1.10.3](https://www.github.com/googleapis/google-cloud-go/compare/pubsub/v1.10.2...pubsub/v1.10.3) (2021-04-23)
 
 

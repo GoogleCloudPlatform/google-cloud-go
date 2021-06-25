@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/api/option"
 	"google.golang.org/api/option/internaloption"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/keepalive"
@@ -109,28 +110,75 @@ func isRetryableStreamError(err error, isEligible func(codes.Code) bool) bool {
 	return isEligible(s.Code())
 }
 
-// retryableReadOnlyCallOption returns a call option that retries with backoff
-// for ResourceExhausted in addition to other default retryable codes for
-// Pub/Sub. Suitable for read-only operations which are subject to only QPS
+// Wraps an ordered list of retryers. Earlier retryers take precedence.
+type compositeRetryer struct {
+	retryers []gax.Retryer
+}
+
+func (cr *compositeRetryer) Retry(err error) (pause time.Duration, shouldRetry bool) {
+	for _, r := range cr.retryers {
+		pause, shouldRetry = r.Retry(err)
+		if shouldRetry {
+			return
+		}
+	}
+	return 0, false
+}
+
+// resourceExhaustedRetryer returns a call option that retries slowly with
+// backoff for ResourceExhausted in addition to other default retryable codes
+// for Pub/Sub. Suitable for read-only operations which are subject to only QPS
 // quota limits.
-func retryableReadOnlyCallOption() gax.CallOption {
+func resourceExhaustedRetryer() gax.CallOption {
 	return gax.WithRetry(func() gax.Retryer {
-		return gax.OnCodes([]codes.Code{
-			codes.Aborted,
-			codes.DeadlineExceeded,
-			codes.Internal,
-			codes.ResourceExhausted,
-			codes.Unavailable,
-			codes.Unknown,
-		}, gax.Backoff{
-			Initial:    100 * time.Millisecond,
-			Max:        60 * time.Second,
-			Multiplier: 1.3,
-		})
+		return &compositeRetryer{
+			retryers: []gax.Retryer{
+				gax.OnCodes([]codes.Code{
+					codes.ResourceExhausted,
+				}, gax.Backoff{
+					Initial:    time.Second,
+					Max:        60 * time.Second,
+					Multiplier: 3,
+				}),
+				gax.OnCodes([]codes.Code{
+					codes.Aborted,
+					codes.DeadlineExceeded,
+					codes.Internal,
+					codes.Unavailable,
+					codes.Unknown,
+				}, gax.Backoff{
+					Initial:    100 * time.Millisecond,
+					Max:        60 * time.Second,
+					Multiplier: 1.3,
+				}),
+			},
+		}
 	})
 }
 
-const pubsubLiteDefaultEndpoint = "-pubsublite.googleapis.com:443"
+const (
+	pubsubLiteDefaultEndpoint = "-pubsublite.googleapis.com:443"
+	pubsubLiteErrorDomain     = "pubsublite.googleapis.com"
+	resetSignal               = "RESET"
+)
+
+// Pub/Sub Lite's RESET signal is a status containing error details that
+// instructs streams to reset their state.
+func isStreamResetSignal(err error) bool {
+	status, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	if !isRetryableRecvCode(status.Code()) {
+		return false
+	}
+	for _, details := range status.Details() {
+		if errInfo, ok := details.(*errdetails.ErrorInfo); ok && errInfo.Reason == resetSignal && errInfo.Domain == pubsubLiteErrorDomain {
+			return true
+		}
+	}
+	return false
+}
 
 func defaultClientOptions(region string) []option.ClientOption {
 	return []option.ClientOption{
@@ -140,21 +188,6 @@ func defaultClientOptions(region string) []option.ClientOption {
 			Time: 5 * time.Minute,
 		})),
 	}
-}
-
-type apiClient interface {
-	Close() error
-}
-
-type apiClients []apiClient
-
-func (ac apiClients) Close() (retErr error) {
-	for _, c := range ac {
-		if err := c.Close(); retErr == nil {
-			retErr = err
-		}
-	}
-	return
 }
 
 // NewAdminClient creates a new gapic AdminClient for a region.
