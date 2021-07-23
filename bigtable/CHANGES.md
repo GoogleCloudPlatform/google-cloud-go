@@ -1,5 +1,15 @@
 # Changes
 
+### [1.10.2](https://www.github.com/googleapis/google-cloud-go/compare/bigtable/v1.10.1...bigtable/v1.10.2) (2021-07-23)
+
+
+### Bug Fixes
+
+* **bigtable/bttest:** emulator too lenient regarding RowFilter and CheckAndMutateRow conditions ([#4095](https://www.github.com/googleapis/google-cloud-go/issues/4095)) ([99537fe](https://www.github.com/googleapis/google-cloud-go/commit/99537fef402a683d481bca7688d6e0c3b536b26b))
+* **bigtable/bttest:** fix ModifyColumnFamilies to purge data ([#4096](https://www.github.com/googleapis/google-cloud-go/issues/4096)) ([2095028](https://www.github.com/googleapis/google-cloud-go/commit/2095028bb83edddddefa52ce4bb343ed1744b91c))
+* **bigtable:** emulator crashes in SampleRowKeys ([#4455](https://www.github.com/googleapis/google-cloud-go/issues/4455)) ([691e923](https://www.github.com/googleapis/google-cloud-go/commit/691e923fca9bd3194ff4ba49bd2d899518875d7c))
+* **bigtable:** fix [#4338](https://www.github.com/googleapis/google-cloud-go/issues/4338) by removing obsolete with block ([#4353](https://www.github.com/googleapis/google-cloud-go/issues/4353)) ([1cf34b3](https://www.github.com/googleapis/google-cloud-go/commit/1cf34b35e69127a57ab90be583c974a2467b3a97))
+
 ### [1.10.1](https://www.github.com/googleapis/google-cloud-go/compare/bigtable/v1.10.0...bigtable/v1.10.1) (2021-06-02)
 
 
