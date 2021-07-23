@@ -29,6 +29,9 @@ import (
 
 	"cloud.google.com/go/internal/trace"
 	"google.golang.org/api/googleapi"
+	storagepb "google.golang.org/genproto/googleapis/storage/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
@@ -77,7 +80,74 @@ type ReaderObjectAttrs struct {
 //
 // The caller must call Close on the returned Reader when done reading.
 func (o *ObjectHandle) NewReader(ctx context.Context) (*Reader, error) {
+	if o.c.gc != nil {
+		return o.newRangeReaderWithGRPC(ctx, 0, 0)
+	}
 	return o.NewRangeReader(ctx, 0, -1)
+}
+
+// newRangeReaderWithGRPC creates a new Reader with the given range that uses
+// gRPC to read Object content.
+func (o *ObjectHandle) newRangeReaderWithGRPC(ctx context.Context, offset, length int64) (r *Reader, err error) {
+	ctx = trace.StartSpan(ctx, "cloud.google.com/go/storage.Object.newRangeReaderWithGRPC")
+	defer func() { trace.EndSpan(ctx, err) }()
+
+	if o.c.gc == nil {
+		err = fmt.Errorf("handle doesn't have a gRPC client initialized")
+		return
+	}
+	if err = o.validate(); err != nil {
+		return
+	}
+	if length < 0 {
+		err = fmt.Errorf("length must be non-negative")
+		return
+	}
+
+	req := &storagepb.ReadObjectRequest{
+		Bucket: o.bucket,
+		Object: o.object,
+	}
+
+	// Define a function that initiates a Read with offset and length, assuming we
+	// have already read seen bytes.
+	reopen := func(seen int64) (storagepb.Storage_ReadObjectClient, context.CancelFunc, error) {
+		// If the context has already expired, return immediately without making a
+		// call.
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+
+		cc, cancel := context.WithCancel(ctx)
+
+		start := offset + seen
+		// Only set a ReadLimit if length is greater than zero, because zero
+		// means read it all.
+		if length > 0 {
+			req.ReadLimit = length - seen
+		}
+		req.ReadOffset = start
+
+		res, err := o.c.gc.ReadObject(cc, req)
+		if err != nil {
+			// Close the stream context we just created to ensure we don't leak
+			// resources.
+			cancel()
+			return nil, nil, err
+		}
+		return res, cancel, nil
+	}
+
+	res, cancel, err := reopen(0)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Reader{
+		stream:         res,
+		reopenWithGRPC: reopen,
+		cancelStream:   cancel,
+	}, nil
 }
 
 // NewRangeReader reads part of an object, reading at most length bytes
@@ -340,15 +410,37 @@ type Reader struct {
 	wantCRC            uint32 // the CRC32c value the server sent in the header
 	gotCRC             uint32 // running crc
 	reopen             func(seen int64) (*http.Response, error)
+
+	stream         storagepb.Storage_ReadObjectClient
+	reopenWithGRPC func(seen int64) (storagepb.Storage_ReadObjectClient, context.CancelFunc, error)
+	leftovers      []byte
+	cancelStream   context.CancelFunc
 }
 
 // Close closes the Reader. It must be called when done reading.
 func (r *Reader) Close() error {
-	return r.body.Close()
+	if r.body != nil {
+		return r.body.Close()
+	}
+
+	r.closeStream()
+	return nil
+}
+
+func (r *Reader) closeStream() {
+	if r.cancelStream != nil {
+		r.cancelStream()
+	}
+	r.stream = nil
 }
 
 func (r *Reader) Read(p []byte) (int, error) {
-	n, err := r.readWithRetry(p)
+	read := r.readWithRetry
+	if r.reopenWithGRPC != nil {
+		read = r.readWithGRPC
+	}
+
+	n, err := read(p)
 	if r.remain != -1 {
 		r.remain -= int64(n)
 	}
@@ -365,6 +457,114 @@ func (r *Reader) Read(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+func (r *Reader) readWithGRPC(p []byte) (int, error) {
+	// No stream to read from, either never initiliazed or Close was called.
+	// TODO: should an error be returned here? "reader has been closed"?
+	if r.stream == nil {
+		return 0, io.EOF
+	}
+
+	// The entire object has been read by this reader, return EOF.
+	if r.size != 0 && r.size == r.seen {
+		return 0, io.EOF
+	}
+
+	n := 0
+	var usedLeftovers bool
+
+	if len(r.leftovers) > 0 {
+		cp := copy(p, r.leftovers)
+		r.seen += int64(cp)
+		r.leftovers = r.leftovers[cp:]
+
+		// No more room left in the user's buffer or the entire object has been
+		// read.
+		if len(p[cp:]) == 0 || r.size == r.seen {
+			return cp, nil
+		}
+
+		usedLeftovers = true
+		n = cp
+	}
+
+	var err error
+	for len(p[n:]) > 0 {
+		if usedLeftovers && (r.size-r.seen) > 0 {
+			// Free up the previously opened stream so we can create a new one
+			// starting at the offset after reading the leftovers.
+			r.closeStream()
+			r.stream, r.cancelStream, err = r.reopenWithGRPC(r.seen)
+			if err != nil {
+				return n, err
+			}
+			// Reset flag to avoid reopening the client every iteration.
+			usedLeftovers = false
+		}
+		msg, err := r.stream.Recv()
+		if err != nil {
+			if err == io.EOF && r.seen == r.size {
+				// Let the next call to readWithGRPC return EOF.
+				return n, nil
+			}
+
+			// Do not retry PermissionDenied.
+			if st, ok := status.FromError(err); ok && st.Code() == codes.PermissionDenied {
+				return n, err
+			}
+
+			// TODO: How many times do we try to read before stopping?
+			// TODO: Should we backoff?
+
+			// Save the original error to return instead of the reinit error.
+			e := err
+
+			// Close existing stream and initialize new stream with updated
+			// offset.
+			r.closeStream()
+			r.stream, r.cancelStream, err = r.reopenWithGRPC(r.seen)
+			if err != nil {
+				// Cannot reinstantiate the stream so return the original error.
+				return n, e
+			}
+
+			// Try to Recv again.
+			continue
+		}
+
+		if r.size == 0 {
+			r.Attrs = metadataToAttrs(msg.GetMetadata())
+			r.size = r.Attrs.Size
+			r.remain = r.Attrs.Size
+		}
+
+		// TODO: Handle Crc32C digest.
+		content := msg.GetChecksummedData().GetContent()
+		cp := copy(p[n:], content)
+		leftover := len(content) - cp
+		if leftover > 0 {
+			// Wasn't able to copy all of the data in the message, store for
+			// future Read calls.
+			r.leftovers = make([]byte, leftover)
+			copy(r.leftovers, content[cp:])
+		}
+		n += cp
+		r.seen += int64(cp)
+	}
+
+	return n, nil
+}
+
+// metadataToAttrs converts Object metadata into ReaderObjectAttributes.
+func metadataToAttrs(met *storagepb.Object) ReaderObjectAttrs {
+	return ReaderObjectAttrs{
+		Size:            met.GetSize(),
+		ContentType:     met.GetContentType(),
+		ContentEncoding: met.GetContentEncoding(),
+		CacheControl:    met.GetCacheControl(),
+		LastModified:    met.GetUpdateTime().AsTime(),
+	}
 }
 
 func (r *Reader) readWithRetry(p []byte) (int, error) {
