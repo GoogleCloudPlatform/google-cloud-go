@@ -1,5 +1,13 @@
 # Changes
 
+## [0.89.0](https://www.github.com/googleapis/google-cloud-go/compare/v0.88.0...v0.89.0) (2021-07-23)
+
+
+### Features
+
+* **datafusion:** start generating apiv1 ([e55a016](https://www.github.com/googleapis/google-cloud-go/commit/e55a01667afaf36ff70807d061ecafb61827ba97))
+* **iap:** start generating apiv1 ([e55a016](https://www.github.com/googleapis/google-cloud-go/commit/e55a01667afaf36ff70807d061ecafb61827ba97))
+
 ## [0.88.0](https://www.github.com/googleapis/google-cloud-go/compare/v0.87.0...v0.88.0) (2021-07-22)
 
 
