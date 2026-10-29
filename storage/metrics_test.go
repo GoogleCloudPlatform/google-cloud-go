@@ -17,9 +17,11 @@ package storage
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -875,6 +877,8 @@ func TestRecordTTFB_MetadataOnly(t *testing.T) {
 }
 
 func TestComputeErrorType(t *testing.T) {
+	dnsErr := &net.DNSError{Err: "no such host", Name: "storage.googleapis.com", IsTimeout: true}
+
 	tests := []struct {
 		err        error
 		isHTTP     bool
@@ -903,6 +907,31 @@ func TestComputeErrorType(t *testing.T) {
 		{err: &googleapi.Error{Code: 408}, isHTTP: true, want: "DEADLINE_EXCEEDED"},
 		{err: status.Error(codes.DeadlineExceeded, "Deadline exceeded."), want: "DEADLINE_EXCEEDED"},
 		{err: fmt.Errorf("read: %w", io.EOF), want: "OK"},
+
+		// HTTP status & EOF edge cases.
+		{err: &googleapi.Error{Code: 502}, isHTTP: true, want: "UNAVAILABLE"},
+		{err: io.EOF, isHTTP: true, statusCode: 200, want: "OK"},
+		{err: io.EOF, isHTTP: true, statusCode: 404, want: "NOT_FOUND"},
+		{err: fmt.Errorf("Get \"https://storage.googleapis.com\": %w", io.EOF), isHTTP: true, statusCode: 0, want: "CONNECTION_ERROR"},
+		{err: io.ErrUnexpectedEOF, isHTTP: true, want: "CONNECTION_ERROR"},
+
+		// Timeouts & stall watchdogs.
+		{err: status.Error(codes.DeadlineExceeded, "context deadline exceeded"), want: "TIMEOUT"},
+		{err: &stallTimeoutError{timeout: time.Second, stage: "BidiWriteObject"}, want: "TIMEOUT"},
+
+		// Authentication failures.
+		{err: &credentialError{err: errors.New("dial tcp 169.254.169.254:80: i/o timeout")}, isHTTP: true, want: "AUTHENTICATION_ERROR"},
+		{err: status.Error(codes.Unavailable, "transport: per-RPC creds failed due to error: context deadline exceeded"), want: "AUTHENTICATION_ERROR"},
+
+		// Structured DNS, TCP, and TLS transport errors.
+		{err: dnsErr, isHTTP: true, want: "DNS_FAILURE"},
+		{err: &net.OpError{Op: "dial", Net: "tcp", Err: dnsErr}, isHTTP: true, want: "DNS_FAILURE"},
+		{err: &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}, isHTTP: true, want: "CONNECTION_ERROR"},
+		{err: &net.OpError{Op: "read", Net: "tcp", Err: errors.New("read: connection reset by peer")}, isHTTP: true, want: "CONNECTION_ERROR"},
+		{err: net.ErrClosed, isHTTP: true, want: "CONNECTION_ERROR"},
+		{err: status.Error(codes.Unavailable, "error reading from server: EOF"), want: "CONNECTION_ERROR"},
+		{err: &tls.CertificateVerificationError{Err: errors.New("bad cert")}, isHTTP: true, want: "TLS_FAILURE"},
+		{err: &net.OpError{Op: "remote error", Net: "tcp", Err: errors.New("tls: bad record MAC")}, isHTTP: true, want: "TLS_FAILURE"},
 	}
 
 	for _, tc := range tests {
@@ -910,6 +939,54 @@ func TestComputeErrorType(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("computeErrorType(%v, %v, %v) = %v, want %v", tc.err, tc.isHTTP, tc.statusCode, got, tc.want)
 		}
+	}
+}
+
+func TestRefineCancelled(t *testing.T) {
+	readCtx, readCancel := context.WithCancelCause(context.Background())
+	readCancel(errReadStallTimeout)
+
+	writeCtx, writeCancel := context.WithCancelCause(context.Background())
+	writeCancel(errStallTimeout)
+
+	userCtx, userCancel := context.WithCancel(context.Background())
+	userCancel()
+
+	for _, tc := range []struct {
+		name      string
+		ctx       context.Context
+		errorType string
+		want      string
+	}{
+		{name: "read stall timeout cause", ctx: readCtx, errorType: "CANCELLED", want: "TIMEOUT"},
+		{name: "write stall timeout cause", ctx: writeCtx, errorType: "CANCELLED", want: "TIMEOUT"},
+		{name: "user context cancel", ctx: userCtx, errorType: "CANCELLED", want: "CANCELLED"},
+		{name: "non-cancelled error type", ctx: readCtx, errorType: "CONNECTION_ERROR", want: "CONNECTION_ERROR"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := refineCancelled(tc.ctx, tc.errorType); got != tc.want {
+				t.Errorf("refineCancelled(ctx, %q) = %q, want %q", tc.errorType, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStripPort(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{"storage.googleapis.com:443", "storage.googleapis.com"},
+		{"dns:///storage.googleapis.com:443", "storage.googleapis.com"},
+		{"google-c2p:///storage.googleapis.com", "storage.googleapis.com"},
+		{"dns://authority/storage.googleapis.com:443", "storage.googleapis.com"},
+		{"[::1]:8080", "::1"},
+		{"[::1]", "::1"},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := stripPort(tc.in); got != tc.want {
+				t.Errorf("stripPort(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -1058,11 +1135,28 @@ func TestWrapAuthCredentials(t *testing.T) {
 	if wrapped2 != wrapped {
 		t.Errorf("expected original wrapped credentials on double wrap")
 	}
+
+	rootErr := &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+	errCreds := wrapAuthCredentials(&auth.Credentials{
+		TokenProvider: &mockTokenProvider{err: rootErr},
+	}, m)
+	_, err := errCreds.TokenProvider.Token(context.Background())
+	if !errors.Is(err, rootErr) {
+		t.Errorf("expected errors.Is(err, rootErr) to be true, got %v", err)
+	}
+	if got := computeErrorType(err, true, 0); got != "AUTHENTICATION_ERROR" {
+		t.Errorf("computeErrorType(err, true, 0) = %q, want AUTHENTICATION_ERROR", got)
+	}
 }
 
-type mockTokenProvider struct{}
+type mockTokenProvider struct {
+	err error
+}
 
 func (m *mockTokenProvider) Token(ctx context.Context) (*auth.Token, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
 	return &auth.Token{}, nil
 }
 
