@@ -2541,3 +2541,57 @@ func TestPrepareStatement_InvalidMetadataError(t *testing.T) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
+
+func TestPreparedStatement_Metadata(t *testing.T) {
+	testEnv, err := NewEmulatedEnv(IntegrationTestConfig{})
+	if err != nil {
+		t.Fatalf("NewEmulatedEnv failed: %v", err)
+	}
+	defer testEnv.Close()
+
+	prepResp := newPrepareQueryResp("plan-1", colFamAddress)
+	unaryInterceptor := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		err := invoker(ctx, method, req, reply, cc, opts...)
+		if _, ok := req.(*btpb.PrepareQueryRequest); !ok {
+			return err
+		}
+		pqr := reply.(*btpb.PrepareQueryResponse)
+		pqr.PreparedQuery = prepResp.resp.PreparedQuery
+		pqr.ValidUntil = timestamppb.New(time.Now().Add(10 * time.Second))
+		pqr.Metadata = prepResp.resp.Metadata
+		return nil
+	}
+
+	conn, err := grpc.Dial(testEnv.server.Addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
+		grpc.WithUnaryInterceptor(unaryInterceptor),
+	)
+	if err != nil {
+		t.Fatalf("grpc.Dial failed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := NewClientWithConfig(ctx, testEnv.config.Project, testEnv.config.Instance, disableMetricsConfig, option.WithGRPCConn(conn))
+	if err != nil {
+		t.Fatalf("NewClientWithConfig failed: %v", err)
+	}
+	defer client.Close()
+
+	ps, err := client.PrepareStatement(ctx, "SELECT * FROM users;", nil)
+	if err != nil {
+		t.Fatalf("PrepareStatement: %v", err)
+	}
+	md, err := ps.Metadata()
+	if err != nil {
+		t.Fatalf("ps.Metadata() error: %v", err)
+	}
+	if md == nil || len(md.Columns) != 2 || md.Columns[0].Name != "_key" || md.Columns[1].Name != colFamAddress {
+		t.Fatalf("ps.Metadata() = %+v, want 2 columns (_key, %q)", md, colFamAddress)
+	}
+
+	var nilPS *PreparedStatement
+	if _, err := nilPS.Metadata(); err == nil {
+		t.Fatalf("nilPS.Metadata() succeeded, want error")
+	}
+}
