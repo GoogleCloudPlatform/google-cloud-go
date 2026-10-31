@@ -1751,13 +1751,14 @@ func TestExecuteQuery(t *testing.T) {
 	preparedQuery1 := "first mock prepared query"
 	preparedQuery2 := "second mock prepared query"
 	for _, tc := range []struct {
-		desc                  string
-		testTTL               time.Duration
-		mockPrepQueryResps    []prepareQueryResp
-		mockRecvMsgResps      []recvMsgResp
-		wantExecReqPrepQuerys [][]byte
-		wantResultRowValues   [][]*btpb.Value
-		wantExecErr           error
+		desc                    string
+		testTTL                 time.Duration
+		mockPrepQueryResps      []prepareQueryResp
+		mockRecvMsgResps        []recvMsgResp
+		wantExecReqPrepQuerys   [][]byte
+		wantExecReqResumeTokens [][]byte
+		wantResultRowValues     [][]*btpb.Value
+		wantExecErr             error
 	}{
 		{
 			/*
@@ -1904,6 +1905,10 @@ func TestExecuteQuery(t *testing.T) {
 				[]byte(preparedQuery1),
 				[]byte(preparedQuery1),
 			},
+			wantExecReqResumeTokens: [][]byte{
+				nil,
+				[]byte("resume-token"),
+			},
 			wantResultRowValues: [][]*btpb.Value{newProtoRowValuesWithKey(colFamAddress)},
 		},
 		{
@@ -1914,8 +1919,9 @@ func TestExecuteQuery(t *testing.T) {
 				4. RecvMsg - receives DeadlineExceeded error after query TTL has passed
 				5. PrepareQuery
 				6. ExecuteQuery
-				7. RecvMsg - gets resume token
-				8. RecvMsg - gets EOF
+				7. RecvMsg - gets a batch of data with reset true
+				8. RecvMsg - gets resume token
+				9. RecvMsg - gets EOF
 			*/
 			desc:    "retry on time-based expired query",
 			testTTL: 50 * time.Millisecond,
@@ -1929,6 +1935,7 @@ func TestExecuteQuery(t *testing.T) {
 					sleep: ptr(150 * time.Millisecond),
 					err:   status.Error(codes.DeadlineExceeded, "context deadline exceeded"), // retryable
 				},
+				newExecQueryRespFullBatch(true, nil /* sleep */, []string{colFamAddress}),
 				newExecQueryRespResumeToken(),
 				{err: io.EOF},
 			},
@@ -2025,6 +2032,44 @@ func TestExecuteQuery(t *testing.T) {
 				[]byte(preparedQuery1),
 			},
 		},
+		{
+			desc: "server stream ended with partial batch and no ResumeToken",
+			mockPrepQueryResps: []prepareQueryResp{
+				newPrepareQueryResp(preparedQuery1, colFamAddress, colFamInfo),
+			},
+			mockRecvMsgResps: []recvMsgResp{
+				newExecQueryRespPartialBatchFirstHalf(true /* reset */, nil /* sleep */, []string{colFamAddress}),
+				{err: io.EOF},
+			},
+			wantExecReqPrepQuerys: [][]byte{
+				[]byte(preparedQuery1),
+			},
+			wantExecErr: errors.New("bigtable: server stream ended without sending a resume token"),
+		},
+		{
+			desc: "retry discards uncommitted partial batch and valuesBuffer even when reset is false",
+			mockPrepQueryResps: []prepareQueryResp{
+				newPrepareQueryResp(preparedQuery1, colFamAddress, colFamInfo),
+			},
+			mockRecvMsgResps: []recvMsgResp{
+				newExecQueryRespFullBatch(true /* reset */, nil /* sleep */, []string{colFamAddress, colFamInfo}),
+				newExecQueryRespPartialBatchFirstHalf(false /* reset */, nil /* sleep */, []string{colFamAddress}),
+				{err: status.Error(codes.Unavailable, "mock unavailable error")},
+				newExecQueryRespPartialBatchFirstHalf(false /* reset */, nil /* sleep */, []string{colFamAddressNew}),
+				newExecQueryRespPartialBatchSecondHalf(false /* reset */, nil /* sleep */, []string{colFamAddressNew}, []string{colFamInfo}),
+				newExecQueryRespResumeToken(),
+				{err: io.EOF},
+			},
+			wantExecReqPrepQuerys: [][]byte{
+				[]byte(preparedQuery1),
+				[]byte(preparedQuery1),
+			},
+			wantExecReqResumeTokens: [][]byte{
+				nil,
+				nil,
+			},
+			wantResultRowValues: [][]*btpb.Value{newProtoRowValuesWithKey(colFamAddressNew, colFamInfo)},
+		},
 	} {
 		mockPrepQueryResps = tc.mockPrepQueryResps
 		mockRecvMsgResps = tc.mockRecvMsgResps
@@ -2092,6 +2137,14 @@ func TestExecuteQuery(t *testing.T) {
 					t.Fatalf("%v: PreparedQuery in ExecuteQuery request: got: %v, want: %v",
 						i,
 						string(gotSendMsgReqs[i].PreparedQuery), string(wantPrepQueryInExecReq))
+				}
+			}
+
+			for i, wantResumeToken := range tc.wantExecReqResumeTokens {
+				if string(gotSendMsgReqs[i].ResumeToken) != string(wantResumeToken) {
+					t.Fatalf("%v: ResumeToken in ExecuteQuery request: got: %q, want: %q",
+						i,
+						string(gotSendMsgReqs[i].ResumeToken), string(wantResumeToken))
 				}
 			}
 		})
@@ -2361,8 +2414,9 @@ func (w *wrappedClientStream) RecvMsg(m any) error {
 }
 
 func (w *wrappedClientStream) SendMsg(m any) error {
-	execReq, _ := m.(*btpb.ExecuteQueryRequest)
-	*w.reqRecorder = append(*w.reqRecorder, execReq)
+	if execReq, ok := m.(*btpb.ExecuteQueryRequest); ok {
+		*w.reqRecorder = append(*w.reqRecorder, proto.Clone(execReq).(*btpb.ExecuteQueryRequest))
+	}
 	return w.ClientStream.SendMsg(m)
 }
 
