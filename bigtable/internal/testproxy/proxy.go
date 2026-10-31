@@ -23,6 +23,7 @@ import (
 	"log"
 	"net"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1259,6 +1260,11 @@ func protoValueFromGoValue(goVal any, st bigtable.SQLType) (*btpb.Value, error) 
 				},
 			})
 		}
+		sort.Slice(entries, func(i, j int) bool {
+			ki := entries[i].GetArrayValue().GetValues()[0]
+			kj := entries[j].GetArrayValue().GetValues()[0]
+			return ki.String() < kj.String()
+		})
 		return &btpb.Value{
 			Kind: &btpb.Value_ArrayValue{
 				ArrayValue: &btpb.ArrayValue{Values: entries},
