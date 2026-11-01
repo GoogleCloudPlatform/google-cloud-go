@@ -59,7 +59,6 @@ import (
 	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
-	"google.golang.org/protobuf/proto"
 )
 
 func TestStorageTraceStartEndSpan(t *testing.T) {
@@ -1113,32 +1112,23 @@ func (s *retryAttemptTestServer) BidiReadObject(stream storagepb.Storage_BidiRea
 	if s.nextShouldFail() {
 		return status.Error(codes.Unavailable, "retry me")
 	}
-	// Answer each request with the ranges it asks for, each split across two
-	// responses; the first response also carries the object metadata.
-	first := &storagepb.BidiReadObjectResponse{Metadata: &storagepb.Object{Size: 100}}
+	// Answer each request with the ranges it asks for; the first response also
+	// carries the object metadata.
+	resp := &storagepb.BidiReadObjectResponse{Metadata: &storagepb.Object{Size: 100}}
 	for {
-		second := &storagepb.BidiReadObjectResponse{}
 		for _, r := range req.GetReadRanges() {
-			half := r.GetReadLength() / 2
-			first.ObjectDataRanges = append(first.ObjectDataRanges, &storagepb.ObjectRangeData{
-				ChecksummedData: &storagepb.ChecksummedData{Content: make([]byte, half)},
-				ReadRange:       &storagepb.ReadRange{ReadOffset: r.GetReadOffset(), ReadLength: half, ReadId: r.GetReadId()},
-			})
-			second.ObjectDataRanges = append(second.ObjectDataRanges, &storagepb.ObjectRangeData{
-				ChecksummedData: &storagepb.ChecksummedData{Content: make([]byte, r.GetReadLength()-half)},
-				ReadRange:       &storagepb.ReadRange{ReadOffset: r.GetReadOffset() + half, ReadLength: r.GetReadLength() - half, ReadId: r.GetReadId()},
+			resp.ObjectDataRanges = append(resp.ObjectDataRanges, &storagepb.ObjectRangeData{
+				ChecksummedData: &storagepb.ChecksummedData{Content: make([]byte, r.GetReadLength())},
+				ReadRange:       r,
 				RangeEnd:        true,
 			})
 		}
-		for _, resp := range []*storagepb.BidiReadObjectResponse{first, second} {
-			if proto.Size(resp) == 0 {
-				continue
-			}
+		if resp.Metadata != nil || len(resp.ObjectDataRanges) > 0 {
 			if err := stream.Send(resp); err != nil {
 				return err
 			}
 		}
-		first = &storagepb.BidiReadObjectResponse{}
+		resp = &storagepb.BidiReadObjectResponse{}
 		if req, err = stream.Recv(); errors.Is(err, io.EOF) {
 			return nil
 		} else if err != nil {
@@ -3052,8 +3042,13 @@ func TestAttemptStatsHandlerPayload(t *testing.T) {
 	data := func(n int) *storagepb.BidiWriteObjectRequest_ChecksummedData {
 		return &storagepb.BidiWriteObjectRequest_ChecksummedData{ChecksummedData: &storagepb.ChecksummedData{Content: make([]byte, n)}}
 	}
-	bidi := func(offsets ...int64) *storagepb.BidiReadObjectRequest {
+	// bidi returns a BidiReadObjectRequest for ranges at offsets, which is the
+	// first request of its stream if first is set.
+	bidi := func(first bool, offsets ...int64) *storagepb.BidiReadObjectRequest {
 		req := &storagepb.BidiReadObjectRequest{}
+		if first {
+			req.ReadObjectSpec = &storagepb.BidiReadObjectSpec{}
+		}
 		for _, o := range offsets {
 			req.ReadRanges = append(req.ReadRanges, &storagepb.ReadRange{ReadOffset: o})
 		}
@@ -3071,12 +3066,12 @@ func TestAttemptStatsHandlerPayload(t *testing.T) {
 		{"write empty object", []any{&wreq{FinishWrite: true}}, [2]int64{0, 0}},
 		{"write without data", []any{&wreq{}}, [2]int64{-1, -1}},
 		{"read", []any{&storagepb.ReadObjectRequest{ReadOffset: 10}, int64(100), int64(50)}, [2]int64{10, 150}},
-		{"bidi read uses lowest range offset", []any{bidi(40, 20), int64(30)}, [2]int64{20, 30}},
-		{"bidi request without ranges is ignored", []any{bidi(), bidi(5), int64(10)}, [2]int64{5, 10}},
-		{"response without object data is ignored", []any{int64(0), bidi(5)}, [2]int64{5, 0}},
-		// A multi-range response can be decoded before HandleRPC sees its
-		// request, which is sent on another goroutine.
-		{"bytes decoded before the request", []any{int64(20), bidi(100)}, [2]int64{100, 20}},
+		{"bidi read", []any{bidi(true, 5), int64(10)}, [2]int64{5, 10}},
+		// MultiRangeDownloader streams, which serve several ranges, record
+		// only a size.
+		{"multi-range request records no offset", []any{bidi(true, 40, 20), int64(30)}, [2]int64{-1, 30}},
+		{"range added later records no offset", []any{bidi(true), bidi(false, 5), int64(10)}, [2]int64{-1, 10}},
+		{"response without object data is ignored", []any{bidi(true, 5), int64(0)}, [2]int64{5, 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -3251,8 +3246,8 @@ func TestPayloadTracing(t *testing.T) {
 		// The server's failure count is shared with GetBucket, which the
 		// disabled bucket metadata fetch would otherwise call first.
 		{"grpc/range read retried", grpcClient(&retryAttemptTestServer{failures: 1}), read, [][2]int64{{10, 0}, {10, 20}}},
-		// Only the object data of the two ranges is counted.
-		{"grpc/multi-range read", grpcClient(&retryAttemptTestServer{}, WithGRPCBidiReads()), multiRangeRead, [][2]int64{{0, 20}}},
+		// Only the object data of the two ranges is counted, with no offset.
+		{"grpc/multi-range read", grpcClient(&retryAttemptTestServer{}, WithGRPCBidiReads()), multiRangeRead, [][2]int64{{-1, 20}}},
 		{"http/oneshot write", httpClient(nil, object(1000)), write(0, 1000), [][2]int64{{0, 1000}}},
 		// The session start carries no object bytes, and the empty final
 		// request ("bytes */N") starts at the object size.

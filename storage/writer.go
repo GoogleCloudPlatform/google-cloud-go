@@ -259,9 +259,8 @@ type Writer struct {
 	err               error
 	setTakeoverOffset func(int64)
 
-	// bytesWritten is the cumulative bytes written for request size metric,
-	// and for the payload size attribute of single-request HTTP uploads.
-	bytesWritten atomic.Int64
+	// bytesWritten is the cumulative bytes written for request size metric.
+	bytesWritten int64
 }
 
 func (w *Writer) wrapWriteError(n int, err error) (int, error) {
@@ -357,7 +356,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 	}
 
 	if n > 0 {
-		w.bytesWritten.Add(int64(n))
+		atomic.AddInt64(&w.bytesWritten, int64(n))
 	}
 
 	return w.wrapWriteError(n, err)
@@ -463,7 +462,7 @@ func (w *Writer) markClosed(err error) error {
 		w.err = err
 	}
 	closingErr := w.err
-	total := w.bytesWritten.Load()
+	total := atomic.LoadInt64(&w.bytesWritten)
 	w.mu.Unlock()
 
 	if state := metricsStateFromContext(w.ctx); state != nil {
@@ -497,7 +496,7 @@ func (w *Writer) openWriter() (err error) {
 	isIdempotent = isIdempotent || w.Append && w.o.gen > 0
 	opts := makeStorageOpts(isIdempotent, w.o.retry, w.o.userProject)
 	params := &openWriterParams{
-		ctx:                  withWriterBytes(w.ctx, &w.bytesWritten), // Payload size for tracing.
+		ctx:                  withWriterBytes(w.ctx, &w.bytesWritten),
 		chunkSize:            w.ChunkSize,
 		chunkRetryDeadline:   w.ChunkRetryDeadline,
 		chunkTransferTimeout: w.ChunkTransferTimeout,

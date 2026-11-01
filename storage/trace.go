@@ -439,21 +439,18 @@ func (pa *payloadAttempt) recordRequest(m any) {
 	case *storagepb.ReadObjectRequest:
 		pa.record(req.GetReadOffset(), 0)
 	case *storagepb.BidiReadObjectRequest:
-		if r := req.GetReadRanges(); len(r) > 0 {
-			// Ranges resent after a multi-range download reconnects have no
-			// stable order, so record the lowest offset.
-			offset := r[0].GetReadOffset()
-			for _, rr := range r[1:] {
-				offset = min(offset, rr.GetReadOffset())
-			}
-			pa.record(offset, 0)
+		// A MultiRangeDownloader stream serves several disjoint ranges, for
+		// which one offset would be misleading, so only the first request of
+		// a single-range read records it.
+		if r := req.GetReadRanges(); len(r) == 1 && req.GetReadObjectSpec() != nil {
+			pa.record(r[0].GetReadOffset(), 0)
 		}
 	}
 }
 
-// traceReadObjectResponse adds the object bytes of a ReadObject response that
+// recordReadObjectPayload adds the object bytes of a ReadObject response that
 // d decoded, if decodeErr is nil, to the attempt span of stream.
-func traceReadObjectResponse(stream grpc.ClientStream, d *readObjectResponseDecoder, decodeErr error) {
+func recordReadObjectPayload(stream grpc.ClientStream, d *readObjectResponseDecoder, decodeErr error) {
 	if decodeErr != nil {
 		return
 	}
@@ -465,10 +462,10 @@ func traceReadObjectResponse(stream grpc.ClientStream, d *readObjectResponseDeco
 	pa.add(bufferSliceLen(d.databufs, o.startBuf, o.startOff, o.endBuf, o.endOff))
 }
 
-// traceBidiReadResponse adds the object bytes of all read ranges of a
+// recordBidiReadPayload adds the object bytes of all read ranges of a
 // BidiReadObject response that d decoded, if decodeErr is nil, to the attempt
 // span of stream.
-func traceBidiReadResponse(stream grpc.ClientStream, d *readResponseDecoder, decodeErr error) {
+func recordBidiReadPayload(stream grpc.ClientStream, d *readResponseDecoder, decodeErr error) {
 	if decodeErr != nil {
 		return
 	}
@@ -512,15 +509,21 @@ func streamPayloadAttempt(stream grpc.ClientStream) (*payloadAttempt, bool) {
 // recordWrite records the offset and data of a write message, ignoring
 // messages that carry no data and neither flush nor finish the write.
 func (pa *payloadAttempt) recordWrite(req *storagepb.BidiWriteObjectRequest) {
-	// Data may be a typed nil, on which GetChecksummedData panics.
-	var data *storagepb.ChecksummedData
-	if d, ok := req.GetData().(*storagepb.BidiWriteObjectRequest_ChecksummedData); ok && d != nil {
-		data = d.ChecksummedData
-	}
-	if len(data.GetContent()) == 0 && !req.GetFlush() && !req.GetFinishWrite() {
+	n := writeRequestDataLen(req)
+	if n == 0 && !req.GetFlush() && !req.GetFinishWrite() {
 		return
 	}
-	pa.record(req.GetWriteOffset(), int64(len(data.GetContent())))
+	pa.record(req.GetWriteOffset(), n)
+}
+
+// writeRequestDataLen returns the number of object bytes in req.
+func writeRequestDataLen(req *storagepb.BidiWriteObjectRequest) int64 {
+	// Data may be a typed nil, on which GetChecksummedData panics.
+	d, ok := req.GetData().(*storagepb.BidiWriteObjectRequest_ChecksummedData)
+	if !ok || d == nil {
+		return 0
+	}
+	return int64(len(d.ChecksummedData.GetContent()))
 }
 
 // record sets the stream's offset if it is not set yet, then adds n to its
@@ -540,9 +543,8 @@ func (pa *payloadAttempt) record(offset, n int64) {
 	}
 }
 
-// add adds a positive n to the stream's size, even before its offset is
-// recorded: a multi-range response can be decoded before HandleRPC sees its
-// request.
+// add adds a positive n to the stream's size. MultiRangeDownloader streams
+// record no offset, only a size.
 func (pa *payloadAttempt) add(n int64) {
 	if n <= 0 {
 		return
@@ -605,7 +607,7 @@ func isOneshotUpload(w *Writer) bool {
 	if w.ChunkSize <= 0 {
 		return true
 	}
-	return w.opened && w.closed && w.bytesWritten.Load() < int64(gRPCChunkSize(w.ChunkSize))
+	return w.opened && w.closed && atomic.LoadInt64(&w.bytesWritten) < int64(gRPCChunkSize(w.ChunkSize))
 }
 
 // withUploadChunkSize attaches the 256 KiB-aligned chunk size to ctx for
@@ -647,11 +649,7 @@ type grpcUploadChunkTracker struct {
 }
 
 func (ct *grpcUploadChunkTracker) onRequest(req *storagepb.BidiWriteObjectRequest) {
-	var data *storagepb.ChecksummedData
-	if d, ok := req.GetData().(*storagepb.BidiWriteObjectRequest_ChecksummedData); ok && d != nil {
-		data = d.ChecksummedData
-	}
-	n := int64(len(data.GetContent()))
+	n := writeRequestDataLen(req)
 	if n == 0 {
 		return
 	}
@@ -858,8 +856,8 @@ func recordUploadIDFromHeader(ctx context.Context, h http.Header) {
 }
 
 // withWriterBytes returns ctx carrying the Writer's bytesWritten counter, which
-// httpWritePayload reports as the size of a single-request HTTP upload.
-func withWriterBytes(ctx context.Context, n *atomic.Int64) context.Context {
+// recordHTTPWritePayload reports as the size of a single-request HTTP upload.
+func withWriterBytes(ctx context.Context, n *int64) context.Context {
 	if _, ok := recordingSpan(ctx); !ok {
 		return ctx
 	}
@@ -890,14 +888,27 @@ func setPayloadAttributes(span trace.Span, offset, size int64) {
 }
 
 // recordHTTPWritePayload records the payload of an upload request on its
-// attempt span.
+// attempt span: the Content-Range offset and Content-Length of a resumable
+// chunk, or 0 and the bytes written to the Writer for a single-request
+// (multipart) upload. Other requests are not tagged.
 func recordHTTPWritePayload(req *http.Request, resp *http.Response) {
+	// Only upload requests carry the Writer's counter.
+	n, ok := req.Context().Value(writerBytesKey).(*int64)
+	if !ok {
+		return
+	}
 	span, ok := httpAttemptSpan(req.Context(), resp)
 	if !ok {
 		return
 	}
-	if offset, size, ok := httpWritePayload(req); ok {
-		setPayloadAttributes(span, offset, size)
+	if cr := req.Header.Get("Content-Range"); cr != "" {
+		if offset, ok := parseUploadContentRangeOffset(cr); ok {
+			setPayloadAttributes(span, offset, req.ContentLength)
+		}
+		return
+	}
+	if req.URL != nil && req.URL.Query().Get("uploadType") == "multipart" {
+		setPayloadAttributes(span, 0, atomic.LoadInt64(n))
 	}
 }
 
@@ -915,26 +926,6 @@ func recordHTTPReadPayload(ctx context.Context, resp *http.Response, offset, len
 		size = 0
 	}
 	setPayloadAttributes(span, offset, size)
-}
-
-// httpWritePayload returns the offset and size of an upload request: from
-// Content-Range and Content-Length for a resumable chunk, or 0 and the bytes
-// written to the Writer for a single-request (multipart) upload. Other
-// requests return ok == false.
-func httpWritePayload(req *http.Request) (offset, size int64, ok bool) {
-	// Only upload requests carry the Writer's counter.
-	n, ok := req.Context().Value(writerBytesKey).(*atomic.Int64)
-	if !ok {
-		return 0, 0, false
-	}
-	if cr := req.Header.Get("Content-Range"); cr != "" {
-		offset, ok = parseUploadContentRangeOffset(cr)
-		return offset, req.ContentLength, ok
-	}
-	if req.URL == nil || req.URL.Query().Get("uploadType") != "multipart" {
-		return 0, 0, false
-	}
-	return 0, n.Load(), true
 }
 
 // parseUploadContentRangeOffset returns the first byte of a chunk's

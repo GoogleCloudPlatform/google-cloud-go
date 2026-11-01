@@ -157,7 +157,7 @@ func (c *grpcStorageClient) NewRangeReaderReadObject(ctx context.Context, params
 				databufs: databufs,
 			}
 			err = decoder.readFullObjectResponse()
-			traceReadObjectResponse(stream, decoder, err) // Payload size for tracing.
+			recordReadObjectPayload(stream, decoder, err)
 			return err
 		}
 
@@ -573,7 +573,7 @@ func (r *gRPCReadObjectReader) recv() error {
 
 	r.currMsg = &readObjectResponseDecoder{databufs: databufs}
 	err = r.currMsg.readFullObjectResponse()
-	traceReadObjectResponse(r.stream, r.currMsg, err) // Payload size for tracing.
+	recordReadObjectPayload(r.stream, r.currMsg, err)
 	return err
 }
 
