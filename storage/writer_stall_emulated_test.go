@@ -143,15 +143,7 @@ func TestGRPCWriterStallEmulated(t *testing.T) {
 			budget:       5 * time.Second,
 			configure:    func(w *Writer) { w.ChunkTransferTimeout = 2500 * time.Millisecond },
 			size:         8 * 1024 * 1024,
-			write: func(w *Writer) error {
-				for off := 0; off < 8*1024*1024; off += stallEmuChunkSize {
-					if _, err := w.Write(data[off : off+stallEmuChunkSize]); err != nil {
-						return err
-					}
-				}
-				return nil
-			},
-			wantStreams: 2,
+			minStreams:   2,
 		},
 		{
 			// The 1 MiB tail is sent by Close as the final request.

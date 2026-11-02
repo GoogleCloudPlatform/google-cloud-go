@@ -50,7 +50,8 @@ const (
 // only seeds the baseline; it never triggers a rotation, because the first
 // chunk on a fresh connection is routinely slower than steady state.
 //
-// All methods are safe to call on a nil receiver, which disables rotation.
+// resetWarmUp, recordLatency, and exceeds are safe to call on a nil receiver,
+// which disables rotation.
 type writeChunkDelay struct {
 	mu       sync.Mutex
 	minDelay time.Duration

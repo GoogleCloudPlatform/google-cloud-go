@@ -512,18 +512,16 @@ func (w *gRPCWriter) isActive() bool {
 func (w *gRPCWriter) handleCompletion(c gRPCBidiWriteCompletion) {
 	if c.resource != nil {
 		w.setObj(newObjectFromProto(c.resource))
+		w.budget.recordProgress(false)
+		if w.watchdog != nil {
+			w.watchdog.pause()
+		}
 	}
 
 	// prevConfirmed is the highest offset GCS had confirmed before this
 	// completion; it is meaningless until the first completion.
 	prevConfirmed := w.bufBaseOffset + int64(w.bufFlushedIdx)
 	if !w.awaitingFirstAck && c.flushOffset <= prevConfirmed {
-		if c.resource != nil {
-			w.budget.recordProgress(false)
-			if w.watchdog != nil {
-				w.watchdog.pause()
-			}
-		}
 		// Already handled this completion.
 		return
 	}
@@ -544,18 +542,9 @@ func (w *gRPCWriter) handleCompletion(c gRPCBidiWriteCompletion) {
 	// Only a completion strictly past prevConfirmed counts as progress: a
 	// reconnect that reports the same persisted size must not reset the retry
 	// budget. The stopwatch restarts only if more data is waiting to be sent.
-	progressed := c.flushOffset > prevConfirmed || c.resource != nil
-	if progressed {
-		w.budget.recordProgress(c.resource == nil && w.isActive())
-	}
-
-	// Once the finalized object resource is received, no further writes
-	// will occur; pause the stall timer immediately. Otherwise restart it
-	// on forward progress.
-	if w.watchdog != nil {
-		if c.resource != nil {
-			w.watchdog.pause()
-		} else if progressed {
+	if c.resource == nil && c.flushOffset > prevConfirmed {
+		w.budget.recordProgress(w.isActive())
+		if w.watchdog != nil {
 			w.watchdog.reset()
 		}
 	}
@@ -1570,13 +1559,14 @@ func (s *gRPCResumableBidiWriteBufferSender) connectStage() string {
 const maxPipelinedFlushes = 16
 
 // flushTiming records when a flush request was sent and how long the sender
-// spent in Send for the chunk that the flush completes.
+// spent in Send for the non-flush quantums of the chunk that the flush
+// completes.
 type flushTiming struct {
 	sentAt time.Time
-	// chunkSendTotal is the cumulative time spent in stream.Send for every
-	// quantum of this chunk, including the flush itself. On a saturated
-	// stream Send blocks on HTTP/2 flow control, so this grows with
-	// transfer time.
+	// chunkSendTotal is the cumulative time spent in stream.Send for the
+	// preceding non-flush quantums of this chunk (the flush's own Send time
+	// is captured in commitWait from sentAt). On a saturated stream Send
+	// blocks on HTTP/2 flow control, so this grows with transfer time.
 	chunkSendTotal time.Duration
 }
 
@@ -1706,8 +1696,10 @@ func (s *gRPCResumableBidiWriteBufferSender) connect(ctx context.Context, cs gRP
 					if c == nil {
 						continue
 					}
-					if latency, ok := rs.chunkLatency(time.Now()); ok && s.chunkDelay.recordLatency(latency) {
-						rotate.Store(true)
+					if s.chunkDelay != nil {
+						if latency, ok := rs.chunkLatency(time.Now()); ok && s.chunkDelay.recordLatency(latency) {
+							rotate.Store(true)
+						}
 					}
 					select {
 					case cs.completions <- *c:
