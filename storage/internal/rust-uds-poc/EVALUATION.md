@@ -1,0 +1,418 @@
+# Go thin client over a Rust GCS core as a gRPC/UDS sidecar — POC, Challenges, Benchmarks
+
+Companion to the earlier FFI evaluation (`storage/internal/rust-poc/EVALUATION.md`, branch `go-sdk-rust-poc`).
+This document covers **row #2** of the worklog tab *"gRPC over UDS Approach"*: the Rust GCS core runs as a
+**separate process** on the same machine and the Go SDK becomes a **thin, pure-Go client** that talks to it over a
+Unix domain socket with gRPC. Scope is multi-process only; the in-process (cgo thread) variant is tracked under the FFI work.
+
+All numbers below are real measurements from GCE `c3-standard-8` VMs (Debian 12, kernel 6.1), one in
+`asia-southeast1-b` against a regional bucket in the same region (`cpriti-thickthin-poc-asse1`) and one in
+`us-central1-b` against a **zonal (Rapid) bucket** in the same zone (`cpriti-zb-central1-b`). Raw logs are in
+`gothin/results/uds{2,3,4}-{regional,zonal}/` next to this file.
+
+---
+
+## 1. Purpose
+
+Answer, with code and measurements rather than opinion:
+
+1. What does a Go user lose or gain if the Go SDK is a thin client over a Rust sidecar?
+2. Which of the challenges listed in the worklog are **blockers**, which are **high effort but solvable**, and which are **non-issues** for Go?
+3. How does it perform against today's Go SDK on ReadObject / WriteObject / ListObjects (JSON and gRPC CloudPath), and on the Rapid SLIs (Open, Read50x2x4, Random8K) on regional and zonal buckets?
+4. How would it be packaged and deployed, and what breaks in common customer environments?
+
+## 2. How the POC is built
+
+```
+Go application
+  └── cloud.google.com/go/storage (thin, CGO_ENABLED=0)             gothin/udsthin/
+        ├── finds or spawns the sidecar (per-user socket, embedded binary)
+        ├── gRPC over UDS  (control + data plane, 4 HTTP/2 connections)   gcs_uds/proto/gcscore.proto
+        └── optional shared-memory data plane (memfd + SCM_RIGHTS + mmap)  gothin/udsthin/shm_linux.go
+  ┌──── gcs-core-server (Rust, tonic 0.14 on UDS)                   gcs_uds/server/
+  │       ├── google-cloud-storage 1.21.0 (JSON via reqwest, gRPC CloudPath, appendable writes)
+  │       ├── per-client sessions: caller's OAuth token lent over the socket, bound to peer uid+pid
+  │       ├── peer-UID check (SO_PEERCRED), idle exit, PR_SET_PDEATHSIG, stale-socket cleanup
+  │       └── Stats endpoint (CPU, peak RSS, threads) so the benchmark can charge the sidecar to the caller
+```
+
+* **Wire contract** (`gcscore.proto`): `ReadObject` (server-stream, `repeated bytes` chunks), `OpenObject/ReadRange/CloseObject`
+  (one open stream per object for Rapid-style random reads), `WriteObject` (client-stream), `ListObjects`, `ReadObjectShm`,
+  `CreateSession/UpdateToken/CloseSession`, `Ping`, `Stats`, `Shutdown`.
+* **Thin client** keeps the shape of today's API (`Bucket().Object().NewReader/NewWriter`, `Objects(...)`) so the benchmark
+  harness runs the *same user code* against both the native SDK and the sidecar.
+* **Zero-copy decode** on the Go side (`rawcodec.go`): a gRPC codec that aliases the receive buffer instead of letting
+  `proto.Unmarshal` copy each chunk. Measured gain ≈ 10% CPU on large reads (see §4.6). Can be switched off (`UDS_ZC=0`).
+* **Sidecar discovery/spawn** (`sidecar.go`): socket at `$XDG_RUNTIME_DIR/gcs-core/core.sock` (fallback `/tmp/gcs-core-<uid>/`);
+  dial first, spawn only if nobody is listening, so many Go processes of the same user **share one sidecar**.
+* **Embedded binary** (`embed_linux.go`): `//go:embed bin/gcs-core-server-linux-amd64`, extracted to `~/.cache/gcs-core/<hash>/`
+  with a `memfd_create`+`fexecve` fallback for `noexec` filesystems. Chosen over "download at runtime" (VPC-SC blocks it)
+  and "operator-installed daemon" (not acceptable for a library).
+* **Credentials**: each Go client creates a session and lends its `oauth2.TokenSource` tokens (access tokens, never key files)
+  over the socket; the sidecar uses them as a `CredentialsProvider`, refreshes come from the Go side.
+
+## 3. Challenges from the worklog — Go verdict
+
+Legend: **Blocker** = cannot be made acceptable for a GA Go library as far as we can see · **High effort** = solvable with
+real engineering and an ongoing cost · **OK** = no material user impact.
+
+### Zero copy across the UDS boundary — **High effort (Blocker only if zero-copy over standard `io.Reader`/`io.Writer` without shm is required)**
+* Over a gRPC/UDS socket zero copy is impossible by construction: every byte is copied user→kernel in the sidecar and
+  kernel→user in Go (~0.15–0.30 CPU‑s/GiB at memory bandwidth), plus HTTP/2 framing, flow control (`WINDOW_UPDATE`), and
+  protobuf serialization (~0.9–1.0 CPU‑s/GiB). Measured on a 128 MiB regional read: **2.72–2.99 CPU‑s/GiB** for the pair
+  (2.58–2.59 on mixed write+read) vs **2.26–2.35** for Go's production default (`go-json` over HTTP/2) and **1.40–1.44**
+  for Go on HTTP/1.1 (`go-json-h1`), with the Go side alone at 0.82–0.84 s/GiB just to receive and decode.
+  - **Against Go's production HTTP/2 default (`go-json`), the sidecar adds only +11–15% CPU** on large JSON transfers, because
+    the Rust crate's HTTP/1.1 client (`reqwest` without `http2`) is ~0.9 s/GiB cheaper than Go's `net/http` HTTP/2 stack and
+    nearly subsidizes the UDS hop.
+  - **Against the same wire protocol (`go-json-h1`), the gRPC/UDS hop adds ~1.15 s/GiB (~1.8× CPU)** — the pure IPC + HTTP/2
+    framing tax. A raw UDS stream with a length-prefixed framing protocol (instead of gRPC/HTTP2) would eliminate the HTTP/2
+    and protobuf portion of that tax.
+* To avoid inter-process data copies altogether, the POC implements **shared memory** (a sealed `memfd` passed with
+  `SCM_RIGHTS`, mmap'ed on both sides, gRPC only as control plane). Measured: **1.35–1.91 CPU‑s/GiB**, Go side 0.03–0.04 s/GiB
+  when the caller accepts a borrowed slice, 0.18–0.19 s/GiB when it copies into its own `[]byte` (§4.6). That is at parity with
+  native JSON/HTTP1 and better than native gRPC. While this POC only implemented `ReadObjectShm`, shared memory is **not**
+  inherently reads-only: a production IPC layer can support zero-copy writes too via bidirectional shared-memory ring buffers
+  with `futex`/`eventfd` signaling (or Linux pipe `splice(2)`/`vmsplice(2)`), though it remains Linux-specific and requires a
+  borrowed-buffer API to avoid the final caller copy.
+* Latency is unchanged either way (network-bound at 200–270 MiB/s on this VM); the cost of the copies shows up as CPU, not time.
+
+### Packaging and distribution — **High effort**
+* The sidecar is a 17 MB stripped (21 MB unstripped, 6.9 MB gzip) static musl binary. Embedding it in the Go module means
+  **+6.9 MB per platform in the module zip** (≈41 MB for six platforms vs 1.0 MB today) and **+21 MB in every linked Go
+  binary** (67.7 vs 46.7 MB for the benchmark). `go mod tidy` / `go get` continue to work unchanged — this is the main
+  advantage over FFI — but the module becomes the largest in `google-cloud-go` by far.
+* The Rust half needs a per-target C toolchain to cross-compile (aws-lc-sys fails without `aarch64-linux-gnu-gcc`), so
+  release engineering has to produce N platform binaries and the Go module must ship them (or ship Linux only and fall back
+  to the pure-Go path elsewhere, i.e. keep two implementations).
+* The Go thin client itself cross-compiles with `CGO_ENABLED=0` to linux/arm64, darwin/arm64, s390x, freebsd (44–48 MB
+  binaries, VM log) and windows/amd64 (after build-tagged stubs for `Setpgid`/`SIGTERM`/`getrusage`; the VM run's
+  `cross windows/amd64: ok  bytes` line was a masked failure) — the portability problem of FFI goes away *for the Go side only*.
+  Windows would still need a named-pipe transport and a Windows sidecar build; the POC does not provide either.
+
+### Deployment in major customer environments — **High effort, with hard failures in some**
+Measured on the VM (`gothin/results/uds2-regional/packaging.txt`, `uds3-regional/scratch_retest.txt`):
+* `FROM scratch` / distroless containers: the static musl sidecar starts, **but panics without CA certificates**
+  (`No CA certificates were loaded from the system`) — must bundle `webpki-roots`. The glibc build fails outright (needs
+  `ld-linux` and `GLIBC_2.34`).
+* `noexec` `/tmp` or home: extracting the embedded binary and exec'ing it fails (`rc=126`). The `memfd_create` fallback
+  works on this kernel (6.1), but **cannot be relied on in production**: executing from an anonymous `memfd` is blocked on
+  modern kernels with `vm.memfd_noexec=1` or `2` (or seccomp/MDWE in hardened GKE/PaaS) and is routinely flagged or blocked
+  by enterprise EDR agents (CrowdStrike Falcon, Defender, OSSEC) as a fileless-execution pattern.
+* Read-only filesystems: socket directory must be writable (also used for the shm side channel); abstract sockets avoid
+  the file but are Linux-only and visible to every process in the network namespace (hence the peer-UID check).
+* UDS path > 108 bytes fails (`SUN_LEN`); long `$XDG_RUNTIME_DIR`s are real on some systems.
+* Cloud Run / Functions / GKE with one process per container simply pay a second process (12–37 ms spawn, ~60 MB RSS)
+  per instance; the "shared sidecar" benefit only materialises on VMs with several Go processes of the same user.
+* Peer-UID rejection, orphan cleanup via `PR_SET_PDEATHSIG`, stale-socket recovery, idle exit, PID‑1 behaviour: all pass.
+
+### Mono repo concerns — **High effort**
+* Nothing Go-specific blocks it, but `google-cloud-go` would carry prebuilt binaries of code that lives in another repo
+  (`google-cloud-rust`), with a separate release cadence, security scanning, SBOM and provenance story. A Rust sidecar
+  CVE forces a Go module release; a Go module release must pin an exact sidecar build.
+* Shared sidecar across processes also means **version skew**: two Go binaries built against different SDK versions on
+  the same machine will race to the same socket. The POC namespaces the socket per user only; per-version sockets fix it
+  at the cost of one sidecar per version.
+
+### Tool chain, coordination and maintenance costs — **High effort**
+* Two toolchains (Go + Rust/cargo + C toolchain for aws-lc) and a proto contract between them that must stay compatible
+  across versions in both directions. Rust release build took 229–232 s on the VM, 9 min cold on a workstation.
+* Every Go feature (new option, new header, retry knob) now lands in three places: proto, Rust server, Go client.
+* Error mapping is lossy by design: HTTP/gRPC codes from GCS → tonic status → `googleapi.Error`. The POC maps the common
+  codes (404/412/401/403/429/5xx) and `ErrObjectNotExist` works, but detailed error bodies/`Details` need explicit plumbing.
+
+### Impedance mismatch — **Blocker for 100% drop-in backwards compatibility**
+* Request shape maps cleanly (reads, range reads, writes, list, preconditions, generations). Appendable writes work on
+  both sides and stay within 5% of native up to 128 MiB and within 8–9% at 512 MiB (§4.5).
+* **Blocker for backwards compatibility with caller-process hooks:** anything that runs inside the caller's process —
+  `option.WithHTTPClient` / custom `http.RoundTripper` (widely used in Go enterprise code for custom proxies, mTLS, request
+  signing, and test doubles), `option.WithGRPCConn` / custom `grpc.DialOption`s, in-process OpenTelemetry exporters/span
+  context, and `context.Context` values — **cannot cross the process boundary**. Dropping or ignoring these options breaks
+  the existing `cloud.google.com/go/storage` public contract. Credentials cross only as **lent access tokens** (see §4.8);
+  impersonation, external-account flows and custom `TokenSource`s still run in the Go process, so that part works.
+* **Lack of DirectPath in the Rust crate today (major GCE/GKE gap):** Go's native gRPC client supports DirectPath (ALTS
+  over IPv6 directly to storage backends, bypassing GFE), whereas `google-cloud-storage` 1.21.0 is CloudPath-only. Until the
+  Rust crate implements DirectPath, switching Go's gRPC path to the Rust sidecar forfeits DirectPath throughput and CPU
+  gains on GCE/GKE.
+* ListObjects: the Rust crate lists through gRPC StorageControl, the Go SDK through JSON — different projection and
+  paging behaviour (see §4.3).
+
+### Size of the binary — **OK / High effort**
+* +21 MB per linked Go program (17 MB stripped sidecar) and +6.9 MB per platform in the module zip. The sidecar's RSS is
+  ~57–101 MB after 512 MiB runs; peak RSS of the pair is at parity with native for whole-object transfers (§4.1).
+
+### Harder debugging experience — **High effort**
+* A panic/OOM in the sidecar surfaces to the Go caller as `UNAVAILABLE`/`connection reset`; the Go stack trace stops at
+  the socket. `pprof`, `GODEBUG`, `-race`, Go's HTTP tracing all see only the thin client. The sidecar needs its own log file,
+  tracing and core-dump handling, and support cases need both.
+* Observed during the POC (`uds3-regional/check_grpc_errors.txt`): an `UNIMPLEMENTED` appendable write on a regional
+  bucket reached Go as a raw `rpc error: code = Unimplemented …` that is **not** a `googleapi.Error` (so `errors.As` checks in
+  user code fail); a missing CA bundle made the sidecar exit at start-up with only a Rust panic in its own stderr; and the
+  slow reads at 64–256 concurrent ops (§4.2) produced no error at all — each needed the sidecar's log or `Stats` to diagnose.
+
+### Direct copy of data into GPU buffers — **N/A for Go today (Blocker across processes if ever added)**
+* This row is part of the shared cross-language worklog template. Today's Go GCS SDK has no GPU/CUDA buffer API, so there
+  is no regression for current Go users. Architecturally, if GPU direct copy were ever added, a separate sidecar process
+  cannot write into the caller's CUDA buffers without exporting CUDA IPC handles (`cudaIpcGetMemHandle`) and linking CUDA
+  into the sidecar; the shared-memory data plane gives host memory at best.
+
+## 4. Benchmarks
+
+Method: same harness (`gothin/bench2`) and same user code for both backends; `-iters 10` per cell, p50 reported;
+**CPU‑s/GiB and peak MiB include the sidecar** (Go `getrusage` + sidecar `Stats`), so they are directly comparable
+between native and UDS rows. `whole` style = one `io.ReadAll`/`Write` of the object; `32k` style = 32 KiB `Read`/`Write` loop.
+Baselines: `go-json` = Go SDK production default (HTTP/2); `go-json-h1` = Go SDK on HTTP/1.1 (`MaxIdleConnsPerHost=256`,
+matching the wire protocol of the Rust crate, whose `reqwest` client uses HTTP/1.1); `go-grpc-cp` = Go SDK gRPC CloudPath
+(BidiReads on, client metrics off, pool = NumCPU, DirectPath disabled for CloudPath parity since the Rust crate has no
+DirectPath — see §3). UDS rows: `go-uds-json` = sidecar on JSON; `go-uds-grpcR-jsonW` = gRPC reads, JSON writes (gRPC
+non-appendable writes are `UNIMPLEMENTED` on regional buckets, for both SDKs). Both native Go and the Rust crate compute
+and verify hardware-accelerated Castagnoli CRC32C checksums over the network on full-object reads and writes; the local
+UDS/shm hop between Go and the sidecar is un-checksummed (just as in-process memory copies are).
+
+### 4.1 Regional, one operation at a time (asia-southeast1, c3-standard-8)
+
+Native rows: `uds2-regional/regional_seq_native_*_r{1,2}.txt`; UDS rows: `uds4-regional/regional_seq_uds_*_r{1,2}.txt`
+(the uds2 UDS runs crashed in the 32k block on a double-free in the zero-copy reader, fixed before uds4). Values are the
+p50 of each round, shown as `r1 / r2`. CPU s/GiB is write+read at that size, **Go process + sidecar**. Peak MiB is the
+process-lifetime high-water mark, so only the first (`whole`) block is meaningful per size.
+
+**`whole` style — JSON paths**
+
+| size | op | go-json-h1 | go-json (h2) | go-uds-json | CPU s/GiB h1 / h2 / uds | peak MiB h1 / uds |
+|---|---|---|---|---|---|---|
+| 1 MiB | write | 88 / 92 ms | 94 / 87 ms | 83 / 93 ms | 3.13–3.18 / 4.05–4.19 / **4.15–4.41** | 84–85 / 74–75 |
+| 1 MiB | read | 37 / 41 ms | 36 / 37 ms | 39 / 39 ms | | |
+| 16 MiB | write | 266 / 305 ms | 286 / 312 ms | 348 / 288 ms | 1.51–1.57 / 2.36–2.46 / **2.64–2.66** | 132–133 / 150–168 |
+| 16 MiB | read | 103 / 117 ms | 98 / 108 ms | 116 / 109 ms | | |
+| 128 MiB | write | 1.50 / 1.60 s | 1.57 / 1.44 s | 1.70 / 1.54 s | 1.40–1.44 / 2.30–2.35 / **2.58–2.59** | 470–473 / 471–492 |
+| 128 MiB | read | 646 / 625 ms | 524 / 608 ms | 636 / 556 ms | | |
+| 512 MiB | write | 5.61 / 5.78 s | 5.80 / 6.53 s | 5.78 / 5.84 s | 1.41–1.43 / 2.26–2.32 / **2.55–2.56** | 1497–1499 / 1503–1522 |
+| 512 MiB | read | 2.46 / 2.49 s | 1.89 / 2.09 s | 2.17 / 1.81 s | | |
+
+**`whole` style — gRPC reads** (`go-grpc-cp` native vs `go-uds-grpcR-jsonW`; writes on the UDS row are JSON, see note above)
+
+| size | read native gRPC | read UDS gRPC | CPU s/GiB native / UDS | peak MiB native / UDS |
+|---|---|---|---|---|
+| 1 MiB | 55 / 61 ms | 60 / 58 ms | 5.49–5.56 / **5.19–5.36** | 80–93 / 78–82 |
+| 16 MiB | 126 / 130 ms | 140 / 127 ms | 2.80–2.86 / **2.92–2.95** | 178–188 / 144–151 |
+| 128 MiB | 616 / 687 ms | 738 / 677 ms | 2.34–2.46 / **2.68–2.71** | 515–516 / 425–435 |
+| 512 MiB | 2.20 / 2.25 s | 2.62 / 2.50 s | 2.44–2.61 / **2.76–2.77** | 1542–1544 / 1458–1467 |
+
+**`32k` style** (32 KiB `Read`/`Write` loop — the shape most user code has)
+
+| size | op | go-json-h1 | go-uds-json | crossings/op UDS | CPU s/GiB h1 / uds |
+|---|---|---|---|---|---|
+| 1 MiB | write | 85 / 94 ms | 78 / 87 ms | 3 | 2.15–2.31 / 3.06–3.32 |
+| 16 MiB | write | 306 / 287 ms | 316 / 309 ms | 11 | 1.49–1.60 / 2.80–2.94 |
+| 128 MiB | write | 1.65 / 1.61 s | 1.57 / 1.60 s | **3 595** | 1.38–1.42 / 2.80–2.85 |
+| 512 MiB | write | 5.87 / 5.58 s | **6.76 / 6.43 s** | **15 883** | 1.37–1.42 / 2.81–3.04 |
+| 128 MiB | read | 603 / 684 ms | 645 / 530 ms | 1 | |
+| 512 MiB | read | 2.22 / 2.48 s | 2.34 / 1.81 s | 1 | |
+
+Reads stay one streaming RPC per object regardless of how the caller reads. Writes in the POC forward each `Write` call
+as one gRPC message, so a 32 KiB write loop becomes ~16k messages for 512 MiB and costs 10–15% latency; a production client
+would coalesce to the resumable chunk size (16 MiB) before crossing, as the `whole` rows do (66 / 258 crossings).
+
+**Zero-copy decode matters for memory as much as CPU:** with stock `proto.Unmarshal` (`*_json_proto_*`) the same runs
+peak at 759–799 / 2795–2819 MiB for 128 / 512 MiB objects vs 471–492 / 1503–1522 MiB with the aliasing codec, and CPU is
+2.88–3.29 vs 2.58–2.59 s/GiB at 128 MiB (2.88–3.10 vs 2.55–2.56 at 512 MiB).
+
+### 4.2 Regional, 16 MiB objects, 16 / 64 / 256 concurrent operations
+
+| parallel | backend | write p50 | read p50 | read p90 | CPU s/GiB | Go threads | sidecar threads |
+|---|---|---|---|---|---|---|---|
+| 16 | go-json-h1 | 279 ms | 109 ms | 152 ms | 1.76 | 12 | – |
+| 16 | go-grpc-cp | 263 ms | 151 ms | 278 ms | 2.88 | 11 | – |
+| 16 | go-uds-json | 302 ms | 114 ms | 170 ms | 3.40 | 12 | 13 |
+| 16 | go-uds-grpcR-jsonW | 287 ms | 152 ms | 264 ms | 3.97 | 12 | 17 |
+| 64 | go-json-h1 | 380 ms | 157 ms | 255 ms | 1.67 | 15 | – |
+| 64 | go-grpc-cp | 299 ms | 151 ms | **18.9 s** | 2.85 | 11 | – |
+| 64 | go-uds-json | 465 ms | **369 ms** | 954 ms | 3.63 | 12 | 25 |
+| 64 | go-uds-grpcR-jsonW | 323 ms | **271 ms** | 2.7 s | 3.98 | 12 | 22 |
+| 256 | go-json-h1 | 2.07 s | 652 ms | 1.10 s | 1.88 | 17 | – |
+| 256 | go-grpc-cp | 2.77 s | 761 ms | 6.37 s | 2.86 | 11 | – |
+| 256 | go-uds-json | 4.09 s | **2.11 s** | 3.44 s | 3.87 | 12 | 56 |
+| 256 | go-uds-grpcR-jsonW | 3.51 s | **1.79 s** | 6.62 s | 4.30 | 12 | 51 |
+
+**Connection sweep** (`uds4-regional/regional_par{64,256}_conns*_uds_json.txt`): to test whether the slowdown at 64–256
+in-flight operations comes from multiplexing everything over 4 HTTP/2 connections to the sidecar, the same cell was run
+with 4, 16, 64 and 256 UDS connections.
+
+| parallel | UDS conns | write p50 | read p50 | crossings/op write / read | sidecar threads | native h1 same day |
+|---|---|---|---|---|---|---|
+| 64 | 4 | 618 ms | 455 ms | 371 / 144 | 22 | write 413 ms / read 155 ms |
+| 64 | 16 | 524 ms | 238 ms | 319 / 161 | 36 | |
+| 64 | 64 | 834 ms | 353 ms | 462 / 112 | 20 | |
+| 64 | 256 | 754 ms | 365 ms | 429 / 124 | 13 | |
+| 256 | 4 | 3.68 s | 1.99 s | 2318 / 209 | 56 | write 2.54 s / read 581 ms |
+| 256 | 16 | 3.51 s | 1.81 s | 2333 / 180 | 72 | |
+| 256 | 64 | 3.61 s | 1.38 s | 2373 / 159 | 87 | |
+| 256 | 256 | 3.41 s | 1.66 s | 2360 / 180 | 21 | |
+
+The connection count makes no consistent difference, so the HTTP/2 multiplexing hypothesis is **not** supported.
+* **Correction on the `crossings/op` (`ffi/op`) column at `parallel > 1`:** the large numbers in that column (`371 / 144` at
+  par=64, `2318 / 209` at par=256) are an **instrumentation bug in `bench2.go:177, 193, 204, 226`**, not message fragmentation.
+  Each worker goroutine sampled `f0 := ffi(); ... ffi() - f0` against the single package-global atomic `udsthin.RPCs`
+  (`udsthin.go:40`), so while one worker's 16 MiB op was in flight for 0.4–4 s, the delta accumulated the RPC increments of all
+  63 or 255 *other* concurrent workers. In the actual wire code, `pump_reader` (`service.rs:170-198`) always coalesces reads to
+  2 MiB chunks (1 streaming RPC delivering 8 messages for 16 MiB), and `w.send` (`udsthin.go:500`) always sends 2 MiB chunks
+  (10 crossings per 16 MiB `whole` write: open + 8 chunks + close).
+* **Actual causes of the 64/256-way slowdown in the POC:**
+  1. **Tight `mpsc::channel(4)` backpressure (`service.rs:317, 431`):** each stream bridges the crate reader/writer to tonic
+     through a 4-slot channel, causing frequent task yield/wake cycles when 64–256 streams run concurrently on 8 vCPUs.
+  2. **Dual-runtime scheduler contention on 8 vCPUs:** 256 Go goroutines and 256 Tokio tasks compete for the same 8 cores across
+     the UDS boundary (CPU rises to 3.6–4.3 s/GiB vs 1.7–1.9 native HTTP/1.1).
+  3. **HTTP/1.1 connection pool asymmetry:** `bench2_native` explicitly sets `MaxIdleConnsPerHost = 256` (`cmd/bench2_native/main.go:26`),
+     whereas the sidecar uses `google-cloud-storage`'s default `reqwest::Client` pool configuration.
+  4. Native gRPC CloudPath has its own tail problem in the same cells (p90 18.9 s at 64, 6.4 s at 256) that is unrelated to the sidecar.
+
+### 4.3 ListObjects (1000 objects, regional)
+
+| backend | p50 | CPU ms/call | note |
+|---|---|---|---|
+| go-json-h1 | 56–60 ms | 9.3–9.6 | JSON, full projection |
+| go-json (h2) | 68–70 ms | 10.7–11.0 | JSON, full projection |
+| go-grpc-cp | 66–73 ms | 2.5–2.6 | gRPC `ListObjects` |
+| go-uds-json / go-uds-grpcR | 71–78 ms | 3.1–3.4 (Go + sidecar) | Rust crate → gRPC StorageControl `ListObjects` + one UDS hop; not the same wire call as the JSON baselines (`uds4-regional/*_r{1,2}.txt`) |
+
+### 4.4 Rapid-workload SLIs (go/gcs-sdk:continuous-benchmarks-for-acv2): Open, Read50x2x4, Random8K
+
+`open` = open a 200 MiB object; `read50x2x4` = 50 MiB in 2 streams × 4 ranges, serial and concurrent; `random8k` = 8 KiB
+random reads from an open 100 MiB object. Native = Go SDK gRPC with `MultiRangeDownloader` (BidiReads); UDS = sidecar gRPC
+with one open bidi stream per object (`OpenObject/ReadRange`). Two rounds each; range of p50s shown.
+
+| SLI | metric | **zonal** native | **zonal** UDS | regional native | regional UDS | regional native JSON range |
+|---|---|---|---|---|---|---|
+| open | p50 | 29.8–39.4 ms | 20.1–22.0 ms | 30.6–40.1 ms | 28.2–31.5 ms | 25.8–26.9 ms |
+| read50x2x4 serial | p50 | 530–555 ms | 587–684 ms | 710–831 ms | 564–803 ms | 1.89–2.08 s |
+| read50x2x4 concurrent | p50 | 316–359 ms | 323–332 ms | 348–443 ms | 368–532 ms | 438–538 ms |
+| read50x2x4 | CPU s/GiB | 2.65–2.88 | 2.66–2.83 | 2.79–3.07 | 2.64–2.96 | 2.77–3.23 |
+| random8k | p50 | 1.40–1.73 ms | 1.14–1.46 ms | 3.24–4.50 ms | 4.20–5.02 ms | 28.4–28.5 ms |
+| random8k | p99 | 2.56–4.66 ms | 2.26–3.07 ms | 9.3–12.8 ms | 7.2–10.5 ms | 50–68 ms |
+| random8k | CPU ms/op | 0.09 | 0.22–0.23 | 0.09 | 0.23 | 0.18–0.22 |
+| peak RSS (pair) | MiB | 184–221 | 238–293 | 156–194 | 289–331 | 207 |
+
+Reading: latency and throughput are at parity (differences are within run-to-run noise); the sidecar costs **2.5× CPU per
+8 KiB read** (0.23 vs 0.09 ms) and ~100 MiB more memory for the second process. Note that in this POC, `Opened.ReadAt`
+(`udsthin.go:616`) opens a new `/gcscore.v1.GcsCore/ReadRange` stream over UDS for each 8 KiB call (while the sidecar reuses
+its open GCS `ObjectDescriptor`); keeping a persistent bidirectional UDS stream per opened object would avoid the per-call
+HTTP/2 stream setup over UDS.
+
+### 4.5 Zonal bucket, appendable writes + sequential reads (us-central1-b, gRPC CloudPath on both sides)
+
+Zonal buckets reject JSON resumable uploads (400) and non-appendable gRPC writes for both SDKs, so only appendable writes
+(`Writer.Append=true` natively, appendable object on the Rust side) are compared. One operation at a time, `whole` style, p50 of two rounds.
+
+| size | write native | write UDS | read native | read UDS | CPU s/GiB native | CPU s/GiB UDS | peak MiB native | peak MiB UDS |
+|---|---|---|---|---|---|---|---|---|
+| 1 MiB | 134–139 ms | 107–110 ms | 32–33 ms | 28–32 ms | 5.50–5.70 | 5.72–5.92 | 93–94 | 77 |
+| 16 MiB | 159–175 ms | 159–163 ms | 81–90 ms | 81–91 ms | 2.67–2.69 | 3.23–3.32 | 171–189 | 173–196 |
+| 128 MiB | 404–456 ms | 423–437 ms | 469–492 ms | 493–533 ms | 2.22–2.30 | 2.94–2.96 | 510–517 | 489–506 |
+| 512 MiB | 1.26–1.33 s | 1.37–1.43 s | 1.79–1.90 s | 1.86–1.94 s | 2.29–2.33 | 2.96–2.97 | 1537–1544 | 1528–1531 |
+
+### 4.6 Shared-memory data plane vs gRPC chunks (128 MiB read, one at a time, 10 iters × 2 rounds)
+
+`gothin/results/uds3-{regional,zonal}/*_shm_r{1,2}.txt`. Same sidecar, same object; only the data plane differs. Shown as `r1 / r2`.
+
+| path | data plane | regional JSON p50 | CPU s/GiB (Go + sidecar) | regional gRPC p50 | CPU s/GiB | zonal gRPC p50 | CPU s/GiB |
+|---|---|---|---|---|---|---|---|
+| gRPC chunks → copy into caller's `[]byte` | UDS | 540 / 483 ms | 2.76 / 2.72 (Go 0.82–0.84) | 645 / 728 ms | 2.94 / 2.99 (Go 0.82) | 553 / 515 ms | 2.96 / 2.92 (Go 0.84) |
+| shm → copy into caller's `[]byte` | memfd | 560 / 545 ms | 1.56 / 1.53 (Go 0.18–0.19) | 641 / 687 ms | 1.76 / 1.91 (Go 0.19) | 593 / 534 ms | 1.78 / 1.83 (Go 0.19) |
+| shm → lend slice (zero copy) | memfd | 593 / 541 ms | 1.42 / 1.35 (Go 0.03) | 569 / 812 ms | 1.62 / 1.71 (Go 0.03) | 628 / 470 ms | 1.61 / 1.64 (Go 0.04) |
+| native go-json-h1 (reference, §4.1) | – | 646 / 625 ms | 1.40 / 1.44 | | | | |
+
+Zero-copy *decode* on the gRPC path (aliasing receive buffers instead of `proto.Unmarshal` copying): Rapid read50 serial
+3.05–3.06 → 2.66–2.80 CPU‑s/GiB on zonal (3.11–3.22 → 2.64–2.70 on regional); 128 MiB whole write+read 2.88–3.29 → 2.58–2.59 s/GiB
+on regional (`*_proto_*` files are the non-aliasing runs).
+
+### 4.7 IPC floor: ping over the socket (c3-standard-8)
+
+| payload | UDS rtt | UDS echo MiB/s | TCP loopback rtt | TCP MiB/s |
+|---|---|---|---|---|
+| 0 | 54 µs | – | 56 µs | – |
+| 4 KiB | 64 µs | 122 | 67 µs | 117 |
+| 64 KiB | 209 µs | 598 | 222 µs | 562 |
+| 1 MiB | 1.94 ms | 1031 | 1.42 ms | 1410 |
+| 4 MiB | 6.76 ms | 1184 | 5.58 ms | 1433 |
+
+The hop itself is ~55 µs and >1 GB/s, so it never becomes the bottleneck against a 200–400 MiB/s network path; its cost is CPU.
+
+### 4.8 Credentials: per-caller sessions (`session_tests.txt`, regional and zonal)
+
+1. Read with the caller's lent token → OK.
+2. Second client in the same process with a bogus token → `401 Invalid Credentials` (no silent fallback to the sidecar's ADC).
+3. Another process presenting a stolen session id → `403 session is bound to another process`.
+4. `UpdateToken` refresh path → OK.
+5. Token not present in the sidecar's environment; never logged (`set_sensitive`).
+
+Residual concerns, verified rather than assumed:
+* Tokens live in sidecar RAM and would appear in a sidecar core dump; the 2025 concern about *key files* over the socket
+  does not apply, only 1 h access tokens cross.
+* **Ambient authority (`--require-session`):** in the POC `--require-session` defaulted to `false` for benchmark flags, meaning
+  a same-UID client that omits `x-session` falls back to the sidecar's ambient ADC (`service.rs:78`). In production,
+  `--require-session` must default to `true`.
+* **Session lifecycle & PID recycling:** `session.rs` binds sessions to `(peer_uid, peer_pid)` without a disconnect hook or
+  idle TTL; if a client crashes (`SIGKILL`) and the kernel later recycles its PID under the same UID, the orphaned session
+  could be reused. Production sessions must be tied to the UDS connection lifecycle (cleaned up on socket EOF) with a TTL,
+  and the client's `refreshLoop` (`udsthin.go:145`) needs exponential backoff on token refresh errors.
+
+### 4.9 Packaging facts (VM)
+
+| item | measured |
+|---|---|
+| sidecar binary | 20.9 MB glibc / 21.0 MB musl, 17.3–17.4 MB stripped, 6.9 MB gzip |
+| Go benchmark binary | 46.7 MB without sidecar, 67.7 MB with embedded sidecar (31.7 MB stripped w/o) |
+| module zip delta | +6.9 MB per platform (gzip -9 of the 17.4 MB stripped binary); 6 platforms ≈ 41 MB vs 1.0 MB for `storage` today. (The `### 13` line in `packaging.txt` is wrong — the script tarred the stripped *Go* binary six times, 65 MB.) |
+| Rust release build | 229–232 s on c3-standard-8; 9 min cold on a workstation |
+| sidecar spawn / client init | 12–37 ms spawn; 24–70 ms first client init (embedded: 36 ms spawn, 67 ms init, includes extraction) |
+| reuse by a second client | 4 ms (dial existing socket, no spawn) |
+| idle sidecar RSS after 512 MiB run | 57–67 MB, 9 threads |
+
+## 5. What the numbers say (plain English)
+
+* **Latency/throughput:** at parity for sequential and Rapid workloads, regional and zonal, JSON and gRPC CloudPath — the
+  network dominates. However, **the Rust crate lacks DirectPath today**, which is a major throughput/CPU regression on GCE/GKE
+  compared to Go's native gRPC DirectPath client until Rust adds DirectPath support.
+* **CPU:**
+  - Against Go's **production default (`go-json` over HTTP/2, 2.26–2.35 s/GiB)**, the sidecar path (`go-uds-json`, 2.55–2.59 s/GiB)
+    adds only **+11–15% CPU** on large transfers because the Rust crate's HTTP/1.1 transport saves ~0.9 s/GiB over Go's HTTP/2 stack.
+  - Against **Go on HTTP/1.1 (`go-json-h1`, 1.40–1.44 s/GiB, same wire protocol)**, the gRPC/UDS hop adds **~1.15 s/GiB (~1.8× CPU)** —
+    the pure IPC + HTTP/2 framing tax. Shared memory brings large reads to 1.35–1.91 s/GiB (Go side 0.03–0.04) and can be extended
+    to writes via bidirectional ring buffers, at the cost of a Linux-only borrowed-buffer API.
+  - On 8 KiB random reads, the POC pays 2.5× CPU (0.23 vs 0.09 ms/op), partly because `Opened.ReadAt` opens a new UDS stream per call.
+* **Concurrency:** at 16 in-flight ops the sidecar keeps up; at 64–256 reads are 1.5–3× slower than native JSON/HTTP1.
+  More UDS connections do not help; the slowdown in the POC comes from `mpsc::channel(4)` backpressure (`service.rs:317, 431`),
+  dual-runtime (Go + Tokio) thread contention on 8 vCPUs, and untuned `reqwest` connection pooling vs `MaxIdleConnsPerHost=256`
+  in `bench2_native` (the inflated `crossings/op` numbers at `par > 1` were a global-atomic counter bug in `bench2.go`, see §4.2).
+* **Memory:** one extra process (~60–100 MB) per machine-user; peak RSS of the pair matches native for whole-object transfers.
+* **Backwards compatibility & user experience:** `go get` / `go mod tidy` / `CGO_ENABLED=0` cross-compiles keep working — that is
+  the real win over FFI. However, **caller-process hooks (`option.WithHTTPClient`, `option.WithGRPCConn`, custom `RoundTripper`,
+  in-process OTel spans) cannot cross the process boundary** (a blocker for drop-in compatibility), `memfd_create` execution on
+  `noexec` mounts is blocked by `vm.memfd_noexec`/enterprise EDR, and debugging splits across two runtimes.
+
+## 6. Steps to reproduce
+
+```bash
+# 1. Build the Rust sidecar (rustup, cmake, gcc) and the pure-Go client/benchmarks
+cd gcs_uds/server && cargo build --release            # glibc
+rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl
+cd ../../gothin && CGO_ENABLED=0 go build -o bin/bench2_uds ./cmd/bench2_uds && go build -o bin/bench2_native ./cmd/bench2_native && go build -o bin/rapid_bench ./cmd/rapid_bench
+
+# 2. Behaviour checks through the thin client (errors, preconditions, range reads, 64 MiB write)
+GCS_CORE_SERVER=../gcs_uds/server/target/release/gcs-core-server BUCKET=<bucket> ./bin/bench2_uds check
+./bin/bench2_uds session-tests; ./bin/bench2_uds hijack; ./bin/bench2_uds ping; ./bin/bench2_uds shm
+
+# 3. Sequential and concurrent W1R3, both backends
+NATIVE_HTTP1=1 ./bin/bench2_native -bucket <b> -sizes 1MiB,16MiB,128MiB,512MiB -iters 10 -list-iters 10
+UDS_TRANSPORT=json ./bin/bench2_uds   -bucket <b> -sizes 1MiB,16MiB,128MiB,512MiB -iters 10 -list-iters 10
+UDS_TRANSPORT=json UDS_CONNS=64 ./bin/bench2_uds -bucket <b> -sizes 16MiB -iters 256 -parallel 64 -styles whole
+
+# 4. Rapid SLIs (needs rapid/200MiB and rapid/100MiB objects: ./bin/rapid_bench -mode prep)
+./bin/rapid_bench -bucket <zonal-bucket> -mode native ; ./bin/rapid_bench -bucket <zonal-bucket> -mode uds
+
+# 5. Packaging / environment matrix (root on a VM): FROM scratch, noexec, memfd, read-only, abstract socket, peer-UID, orphan, idle
+sudo bash gcs_uds/packaging_tests.sh
+
+# 6. Full VM runs used for this document
+bash vm_uds2.sh   # baselines + UDS matrix + rapid + packaging ; vm_uds3.sh shm + ping ; vm_uds4.sh UDS sequential + connection sweep
+```
