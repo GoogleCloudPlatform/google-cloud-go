@@ -518,6 +518,12 @@ func (w *gRPCWriter) handleCompletion(c gRPCBidiWriteCompletion) {
 	// completion; it is meaningless until the first completion.
 	prevConfirmed := w.bufBaseOffset + int64(w.bufFlushedIdx)
 	if !w.awaitingFirstAck && c.flushOffset <= prevConfirmed {
+		if c.resource != nil {
+			w.budget.recordProgress(false)
+			if w.watchdog != nil {
+				w.watchdog.pause()
+			}
+		}
 		// Already handled this completion.
 		return
 	}
@@ -540,13 +546,18 @@ func (w *gRPCWriter) handleCompletion(c gRPCBidiWriteCompletion) {
 	// budget. The stopwatch restarts only if more data is waiting to be sent.
 	progressed := c.flushOffset > prevConfirmed || c.resource != nil
 	if progressed {
-		w.budget.recordProgress(w.isActive())
+		w.budget.recordProgress(c.resource == nil && w.isActive())
 	}
 
-	// Restart the stall timer on forward progress. If nothing remains
-	// outstanding, the write loop pauses it before waiting on the application.
-	if progressed && w.watchdog != nil {
-		w.watchdog.reset()
+	// Once the finalized object resource is received, no further writes
+	// will occur; pause the stall timer immediately. Otherwise restart it
+	// on forward progress.
+	if w.watchdog != nil {
+		if c.resource != nil {
+			w.watchdog.pause()
+		} else if progressed {
+			w.watchdog.reset()
+		}
 	}
 }
 
@@ -1682,9 +1693,13 @@ func (s *gRPCResumableBidiWriteBufferSender) connect(ctx context.Context, cs gRP
 		}
 		go func() {
 			rs.rErr = func() error {
+				var receivedResource bool
 				for {
 					resp, err := st.Recv()
 					if err != nil {
+						if receivedResource && st.Context().Err() != nil {
+							return io.EOF
+						}
 						return err
 					}
 					c := completion(resp)
@@ -1696,6 +1711,9 @@ func (s *gRPCResumableBidiWriteBufferSender) connect(ctx context.Context, cs gRP
 					}
 					select {
 					case cs.completions <- *c:
+						if c.resource != nil {
+							receivedResource = true
+						}
 					case <-st.Context().Done():
 						return st.Context().Err()
 					}
