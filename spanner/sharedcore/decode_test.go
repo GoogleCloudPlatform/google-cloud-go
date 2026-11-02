@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"math"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -257,7 +258,18 @@ func TestKindMismatchReturnsError_DecodeAndPack(t *testing.T) {
 		{"STRUCT with StringValue", &sppb.Type{Code: sppb.TypeCode_STRUCT}, proto3.NewStringValue("not-a-struct")},
 		{"STRUCT with mismatched field", &sppb.Type{Code: sppb.TypeCode_STRUCT, StructType: &sppb.StructType{Fields: []*sppb.StructType_Field{{Name: "b", Type: &sppb.Type{Code: sppb.TypeCode_BOOL}}}}}, proto3.NewListValue(&proto3.ListValue{Values: []*proto3.Value{proto3.NewNumberValue(1)}})},
 		{"STRING with StructValue", &sppb.Type{Code: sppb.TypeCode_STRING}, &proto3.Value{Kind: &proto3.Value_StructValue{}}},
+		{"STRING with NumberValue", &sppb.Type{Code: sppb.TypeCode_STRING}, proto3.NewNumberValue(123)},
+		{"STRING with BoolValue", &sppb.Type{Code: sppb.TypeCode_STRING}, proto3.NewBoolValue(true)},
+		{"STRING with ListValue", &sppb.Type{Code: sppb.TypeCode_STRING}, proto3.NewListValue(&proto3.ListValue{})},
 		{"STRING with typed-nil StringValue", &sppb.Type{Code: sppb.TypeCode_STRING}, &proto3.Value{Kind: (*proto3.Value_StringValue)(nil)}},
+		{"INT64 with NumberValue", &sppb.Type{Code: sppb.TypeCode_INT64}, proto3.NewNumberValue(42)},
+		{"INT64 with typed-nil StringValue", &sppb.Type{Code: sppb.TypeCode_INT64}, &proto3.Value{Kind: (*proto3.Value_StringValue)(nil)}},
+		{"NUMERIC with NumberValue", &sppb.Type{Code: sppb.TypeCode_NUMERIC}, proto3.NewNumberValue(3.14)},
+		{"DATE with NumberValue", &sppb.Type{Code: sppb.TypeCode_DATE}, proto3.NewNumberValue(20260701)},
+		{"JSON with BoolValue", &sppb.Type{Code: sppb.TypeCode_JSON}, proto3.NewBoolValue(false)},
+		{"INTERVAL with NumberValue", &sppb.Type{Code: sppb.TypeCode_INTERVAL}, proto3.NewNumberValue(1)},
+		{"UUID with NumberValue", &sppb.Type{Code: sppb.TypeCode_UUID}, proto3.NewNumberValue(1)},
+		{"ENUM with NumberValue", &sppb.Type{Code: sppb.TypeCode_ENUM}, proto3.NewNumberValue(1)},
 		{"UNSPECIFIED with typed-nil BoolValue", &sppb.Type{Code: sppb.TypeCode_TYPE_CODE_UNSPECIFIED}, &proto3.Value{Kind: (*proto3.Value_BoolValue)(nil)}},
 		{"UNSPECIFIED with typed-nil NumberValue", &sppb.Type{Code: sppb.TypeCode_TYPE_CODE_UNSPECIFIED}, &proto3.Value{Kind: (*proto3.Value_NumberValue)(nil)}},
 		{"UNSPECIFIED with nil ListValue", &sppb.Type{Code: sppb.TypeCode_TYPE_CODE_UNSPECIFIED}, &proto3.Value{Kind: &proto3.Value_ListValue{ListValue: nil}}},
@@ -270,13 +282,13 @@ func TestKindMismatchReturnsError_DecodeAndPack(t *testing.T) {
 			}
 			fields := []*sppb.StructType_Field{{Name: "col", Type: tc.typ}}
 			rows := [][]*proto3.Value{{tc.val}}
-			if decodedRows, err := DecodeRows(rows, fields); err == nil || decodedRows != nil {
-				t.Fatalf("DecodeRows(%s): expected (nil, error), got rows=%+v err=%v", tc.name, decodedRows, err)
+			if decodedRows, err := DecodeRows(rows, fields); err == nil || decodedRows != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
+				t.Fatalf("DecodeRows(%s): expected (nil, row/col wrapped error), got rows=%+v err=%v", tc.name, decodedRows, err)
 			}
-			if cells, arena, _, _, err := PackRowsIntoArena(rows, fields); err == nil || cells != nil || arena != nil {
-				t.Fatalf("PackRowsIntoArena(%s): expected (nil, nil, error), got cells=%+v err=%v", tc.name, cells, err)
+			if cells, arena, _, _, err := PackRowsIntoArena(rows, fields); err == nil || cells != nil || arena != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
+				t.Fatalf("PackRowsIntoArena(%s): expected (nil, nil, row/col wrapped error), got cells=%+v err=%v", tc.name, cells, err)
 			}
-			if cells, arena, _, _, scratch, err := packRowsIntoArenaInternal(rows, fields, true); err == nil || cells != nil || arena != nil || scratch != nil {
+			if cells, arena, _, _, scratch, err := packRowsIntoArenaInternal(rows, fields, true); err == nil || cells != nil || arena != nil || scratch != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
 				t.Fatalf("packRowsIntoArenaInternal(%s, usePool=true): expected error and released scratch, got err=%v", tc.name, err)
 			}
 		})

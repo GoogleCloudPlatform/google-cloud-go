@@ -128,7 +128,7 @@ func DecodeRows(rawRows [][]*proto3.Value, fields []*sppb.StructType_Field) ([][
 		for cIdx := 0; cIdx < limit; cIdx++ {
 			val, err := decodeCellValueWithPool(rawRow[cIdx], colTypes[cIdx], &bytePool)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("sharedcore: row %d, col %d (%q): %w", rIdx, cIdx, fields[cIdx].GetName(), err)
 			}
 			rowSlice[cIdx] = val
 		}
@@ -268,7 +268,7 @@ func packRowsIntoArenaInternal(
 					scratch.bytes = arenaBytes
 					releaseArenaScratch(scratch)
 				}
-				return nil, nil, 0, 0, nil, err
+				return nil, nil, 0, 0, nil, fmt.Errorf("sharedcore: row %d, col %d (%q): %w", rIdx, cIdx, fields[cIdx].GetName(), err)
 			}
 		}
 		if limit < numCols {
@@ -328,9 +328,27 @@ func packCellIntoArena(v *proto3.Value, t *sppb.Type, dstIdx int, cells *[]Packe
 			structFields = t.StructType.Fields
 		}
 		return packListValue(v, KindStruct, code, nil, structFields, dstIdx, cells, arenaBytes)
+	case sppb.TypeCode_STRING,
+		sppb.TypeCode_INT64,
+		sppb.TypeCode_NUMERIC,
+		sppb.TypeCode_DATE,
+		sppb.TypeCode_JSON,
+		sppb.TypeCode_INTERVAL,
+		sppb.TypeCode_UUID,
+		sppb.TypeCode_ENUM:
+		return packStringValue(v, code, dstIdx, cells, arenaBytes)
 	default:
 		return packDefaultValue(v, code, dstIdx, cells, arenaBytes)
 	}
+}
+
+func packStringValue(v *proto3.Value, code sppb.TypeCode, dstIdx int, cells *[]PackedCell, arenaBytes *[]byte) error {
+	sv, ok := v.Kind.(*proto3.Value_StringValue)
+	if !ok || sv == nil {
+		return errUnexpectedValueKind(v, code)
+	}
+	packString(sv.StringValue, dstIdx, cells, arenaBytes)
+	return nil
 }
 
 func packBool(v *proto3.Value, dstIdx int, cells *[]PackedCell) error {
@@ -484,8 +502,7 @@ func packListValue(
 	return nil
 }
 
-// packDefaultValue handles STRING, INT64, NUMERIC, DATE, JSON, INTERVAL, UUID, ENUM,
-// TYPE_CODE_UNSPECIFIED, and any future unrecognized Spanner TypeCodes.
+// packDefaultValue handles TYPE_CODE_UNSPECIFIED and any future unrecognized Spanner TypeCodes.
 func packDefaultValue(v *proto3.Value, code sppb.TypeCode, dstIdx int, cells *[]PackedCell, arenaBytes *[]byte) error {
 	switch kv := v.Kind.(type) {
 	case *proto3.Value_StringValue:
@@ -551,9 +568,26 @@ func decodeCellValueWithPool(v *proto3.Value, t *sppb.Type, bytePool *[]byte) (S
 			structFields = t.StructType.Fields
 		}
 		return decodeListValue(v, KindStruct, code, nil, structFields, bytePool)
+	case sppb.TypeCode_STRING,
+		sppb.TypeCode_INT64,
+		sppb.TypeCode_NUMERIC,
+		sppb.TypeCode_DATE,
+		sppb.TypeCode_JSON,
+		sppb.TypeCode_INTERVAL,
+		sppb.TypeCode_UUID,
+		sppb.TypeCode_ENUM:
+		return decodeStringValue(v, code)
 	default:
 		return decodeDefaultValue(v, code, bytePool)
 	}
+}
+
+func decodeStringValue(v *proto3.Value, code sppb.TypeCode) (SpannerValue, error) {
+	sv, ok := v.Kind.(*proto3.Value_StringValue)
+	if !ok || sv == nil {
+		return SpannerValue{}, errUnexpectedValueKind(v, code)
+	}
+	return SpannerValue{Kind: KindString, StrVal: sv.StringValue}, nil
 }
 
 func decodeBool(v *proto3.Value) (SpannerValue, error) {
@@ -720,7 +754,7 @@ func parseStandardUTCTimestamp(s string) (int64, int32, bool) {
 	month, ok2 := parseDigits2(s, 5)
 	day, ok3 := parseDigits2(s, 8)
 	hour, ok4 := parseDigits2(s, 11)
-	min, ok5 := parseDigits2(s, 14)
+	minute, ok5 := parseDigits2(s, 14)
 	sec, ok6 := parseDigits2(s, 17)
 	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
 		return 0, 0, false
@@ -729,10 +763,10 @@ func parseStandardUTCTimestamp(s string) (int64, int32, bool) {
 	if !okNanos {
 		return 0, 0, false
 	}
-	if month < 1 || month > 12 || day < 1 || day > maxDaysInMonth(year, month) || hour > 23 || min > 59 || sec > 59 {
+	if month < 1 || month > 12 || day < 1 || day > maxDaysInMonth(year, month) || hour > 23 || minute > 59 || sec > 59 {
 		return 0, 0, false
 	}
-	return civilToUnixSeconds(year, month, day, hour, min, sec), nanos, true
+	return civilToUnixSeconds(year, month, day, hour, minute, sec), nanos, true
 }
 
 func parseFractionalNanos(s string) (int32, bool) {
@@ -761,7 +795,7 @@ func parseFractionalNanos(s string) (int32, bool) {
 	return frac, true
 }
 
-func civilToUnixSeconds(year, month, day, hour, min, sec int) int64 {
+func civilToUnixSeconds(year, month, day, hour, minute, sec int) int64 {
 	y := int64(year)
 	m := int64(month)
 	d := int64(day)
@@ -784,7 +818,7 @@ func civilToUnixSeconds(year, month, day, hour, min, sec int) int64 {
 	doy := (153*mp+2)/5 + d - 1
 	doe := yoe*365 + yoe/4 - yoe/100 + doy
 	days := era*146097 + doe - 719468
-	return days*86400 + int64(hour)*3600 + int64(min)*60 + int64(sec)
+	return days*86400 + int64(hour)*3600 + int64(minute)*60 + int64(sec)
 }
 
 func maxDaysInMonth(year, month int) int {
