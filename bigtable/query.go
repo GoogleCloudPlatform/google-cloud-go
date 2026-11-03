@@ -308,7 +308,7 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 	var ongoingResultBatch bytes.Buffer
 
 	// data buffered since the last non-empty `ResumeToken`
-	var valuesBuffer []*btpb.Value
+	valuesBuffer := []*btpb.Value{}
 
 	var resumeToken []byte
 
@@ -393,7 +393,7 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 
 			partialResultSet := results.Results
 			if partialResultSet.GetReset_() {
-				valuesBuffer = nil
+				valuesBuffer = []*btpb.Value{}
 				ongoingResultBatch.Reset()
 			}
 
@@ -504,9 +504,7 @@ func handleExecuteStreamEnd(
 	err error,
 	prevError *error,
 ) error {
-	if stream != nil {
-		*trailerMD = stream.Trailer()
-	}
+	*trailerMD = stream.Trailer()
 	if err != nil && err != io.EOF {
 		*prevError = err
 		return err
