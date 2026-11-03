@@ -1,9 +1,9 @@
-client init: 37.287178ms (sidecar pid 5741, conns 32)
-backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 vcpus=192
+client init: 35.158129ms (sidecar pid 5946, conns 32)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-usw1 vcpus=192
 backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
-go-uds-grpc    open                     187.815ms 243.404ms 243.404ms 259.574ms 208.133ms        0.0       0.00     15.34    0.0%        83
-go-uds-grpc    read50x2x4/serial        5.028005s 5.205044s 5.205044s  5.37301s 4.963285s       20.1       2.43    237.00    0.0%       204
-go-uds-grpc    read50x2x4/concurrent    3.379323s 3.427058s 3.427058s 3.433479s 3.381674s       29.4       2.65    259.13    0.0%       377
-go-uds-grpc    random8k                  32.246ms  39.801ms  42.587ms  44.315ms  35.488ms        0.2      44.25      0.34    0.0%       389
-go-uds-grpc    list-objects-100         114.182ms 154.119ms 154.119ms 185.073ms 116.173ms        0.0       0.00      0.80    0.0%       390
-go-uds-grpc    list-buckets-100         942.161ms  970.05ms  970.05ms 972.115ms 937.423ms        0.0       0.00      2.15    0.0%       398
+go-uds-grpc    open                     208.802ms 221.745ms 221.745ms 243.743ms 200.748ms        0.0       0.00     16.00    0.0%        81
+go-uds-grpc    read50x2x4/serial         4.39811s 4.452604s 4.452604s 4.665766s 4.411148s       22.6       2.40    234.72    0.0%       200
+go-uds-grpc    read50x2x4/concurrent    3.377721s 3.454965s 3.454965s 3.462534s 3.384881s       29.3       2.53    246.92    0.0%       380
+go-uds-grpc    random8k                  43.835ms  47.411ms  57.191ms 128.299ms  44.486ms        0.2      42.39      0.32    0.0%       381
+go-uds-grpc    list-objects-100          83.132ms 148.893ms 148.893ms 215.514ms 115.836ms        0.0       0.00      0.73    0.0%       382
+go-uds-grpc    list-buckets-100         953.612ms  977.33ms  977.33ms 997.439ms 948.734ms        0.0       0.00      2.19    0.0%       386

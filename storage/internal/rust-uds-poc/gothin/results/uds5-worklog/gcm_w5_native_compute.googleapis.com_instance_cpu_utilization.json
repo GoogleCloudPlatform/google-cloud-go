@@ -10,9 +10,9 @@
       "resource": {
         "type": "gce_instance",
         "labels": {
-          "project_id": "gcs-go-sdk-playground",
           "zone": "us-central1-b",
-          "instance_id": "3697964452583574513"
+          "project_id": "gcs-go-sdk-playground",
+          "instance_id": "4800314160389265979"
         }
       },
       "metricKind": "GAUGE",
@@ -20,47 +20,47 @@
       "points": [
         {
           "interval": {
-            "startTime": "2026-11-03T11:08:00Z",
-            "endTime": "2026-11-03T11:08:00Z"
+            "startTime": "2026-11-03T19:00:00Z",
+            "endTime": "2026-11-03T19:00:00Z"
           },
           "value": {
-            "doubleValue": 0.05800124400520959
+            "doubleValue": 0.037442898394045757
           }
         },
         {
           "interval": {
-            "startTime": "2026-11-03T11:07:00Z",
-            "endTime": "2026-11-03T11:07:00Z"
+            "startTime": "2026-11-03T18:59:00Z",
+            "endTime": "2026-11-03T18:59:00Z"
           },
           "value": {
-            "doubleValue": 0.058284676975015826
+            "doubleValue": 0.037861346731242029
           }
         },
         {
           "interval": {
-            "startTime": "2026-11-03T11:06:00Z",
-            "endTime": "2026-11-03T11:06:00Z"
+            "startTime": "2026-11-03T18:58:00Z",
+            "endTime": "2026-11-03T18:58:00Z"
           },
           "value": {
-            "doubleValue": 0.058713390052947845
+            "doubleValue": 0.046217286597090158
           }
         },
         {
           "interval": {
-            "startTime": "2026-11-03T11:05:00Z",
-            "endTime": "2026-11-03T11:05:00Z"
+            "startTime": "2026-11-03T18:57:00Z",
+            "endTime": "2026-11-03T18:57:00Z"
           },
           "value": {
-            "doubleValue": 0.060125044224463568
+            "doubleValue": 0.046192916798671824
           }
         },
         {
           "interval": {
-            "startTime": "2026-11-03T11:04:00Z",
-            "endTime": "2026-11-03T11:04:00Z"
+            "startTime": "2026-11-03T18:56:00Z",
+            "endTime": "2026-11-03T18:56:00Z"
           },
           "value": {
-            "doubleValue": 0.046578634278415153
+            "doubleValue": 0.040411341493582338
           }
         }
       ]

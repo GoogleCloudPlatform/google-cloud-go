@@ -14,15 +14,15 @@
 #       * Memory Consumption: Peak RSS MiB (Go VmHWM + Rust sidecar VmHWM)
 #   - Default topology (per Worklog Configuration spec):
 #       * VM: c4-standard-192 (Ubuntu 24.04 LTS), 200 Gbps GVNIC (TIER_1) in us-central1-a
-#       * Bucket: gs://cpriti-thickthin-poc-use1 in us-east1 (non-colocated CloudPath)
+#       * Bucket: gs://cpriti-thickthin-poc-usw1 in us-west1 (non-colocated CloudPath)
 #
 # Usage:
-#   ./vm_uds5_worklog.sh provision-vm   # creates us-east1 bucket + us-central1-a c4-standard-192 VM
+#   ./vm_uds5_worklog.sh provision-vm   # creates us-west1 bucket + us-central1-a c4-standard-192 VM
 #   ./vm_uds5_worklog.sh                # runs all 6 workloads on the VM and saves logs to $OUT
 set -euo pipefail
 
-BUCKET="${BUCKET:-cpriti-thickthin-poc-use1}"
-BUCKET_LOCATION="${BUCKET_LOCATION:-us-east1}"
+BUCKET="${BUCKET:-cpriti-thickthin-poc-usw1}"
+BUCKET_LOCATION="${BUCKET_LOCATION:-us-west1}"
 VM_NAME="${VM_NAME:-thickthin-poc-uds5}"
 VM_ZONE="${VM_ZONE:-us-central1-a}"
 VM_MACHINE_TYPE="${VM_MACHINE_TYPE:-c4-standard-192}"
@@ -55,6 +55,7 @@ if [[ "${1:-}" == "provision-vm" ]]; then
       --boot-disk-type=hyperdisk-balanced \
       --network-interface=nic-type=GVNIC \
       --network-performance-configs=total-egress-bandwidth-tier=TIER_1 \
+      --metadata-from-file=startup-script="$0" \
       --scopes=cloud-platform; then
       echo "=== Created ${VM_NAME} in zone ${z} ==="
       exit 0
