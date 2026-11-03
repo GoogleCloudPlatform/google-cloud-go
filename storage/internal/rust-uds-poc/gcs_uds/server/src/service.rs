@@ -1,8 +1,21 @@
-//! The GcsCore gRPC service: translates local RPCs into google-cloud-storage
-//! crate calls. Every data byte crosses: GCS → crate buffer → prost frame →
-//! kernel UDS buffer → client. (Count the copies; the client adds its own.)
+// Copyright 2026 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Implementation of the `gcscore.v1.GcsCore` gRPC service over Unix Domain Sockets.
 
 use crate::pb::{self, gcs_core_server::GcsCore};
+use crate::session::Sessions;
 use crate::{Args, Shared};
 use bytes::Bytes;
 use google_cloud_storage::client::{Storage, StorageControl};
@@ -11,18 +24,41 @@ use google_cloud_storage::object_descriptor::ObjectDescriptor;
 use google_cloud_storage::streaming_source::{SizeHint, StreamingSource};
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::UdsConnectInfo;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::session::Sessions;
-
 type RespStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'static>>;
 
+/// An open `BidiReadObject` descriptor bound to the owning client's `(uid, pid)`.
+pub struct OpenHandle {
+    pub uid: u32,
+    pub pid: i32,
+    pub desc: Arc<ObjectDescriptor>,
+}
+
+/// Reaps any open `ObjectDescriptor` handles whose owning client process (`pid`) has exited.
+pub fn reap_dead_handles(handles: &RwLock<HashMap<u64, OpenHandle>>) -> usize {
+    let mut guard = handles.write().unwrap();
+    let before = guard.len();
+    guard.retain(|_, h| {
+        if h.pid <= 0 {
+            return true;
+        }
+        let rc = unsafe { libc::kill(h.pid, 0) };
+        if rc == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    });
+    before - guard.len()
+}
+
+/// The `GcsCore` service bridging local gRPC-over-UDS requests to `google-cloud-storage`.
 pub struct GcsCoreService {
     shm: Arc<crate::shm::Registry>,
     sessions: Arc<Sessions>,
@@ -32,13 +68,25 @@ pub struct GcsCoreService {
     shared: Arc<Shared>,
     default_grpc: bool,
     chunk_size: usize,
-    handles: RwLock<HashMap<u64, Arc<ObjectDescriptor>>>,
+    handles: Arc<RwLock<HashMap<u64, OpenHandle>>>,
     next_handle: AtomicU64,
 }
 
 impl GcsCoreService {
-    pub async fn new(args: &Args, shared: Arc<Shared>, shm: Arc<crate::shm::Registry>) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut sb = Storage::builder();
+    /// Initializes a new `GcsCoreService` with pooled `Storage` and `StorageControl` clients.
+    pub async fn new(
+        args: &Args,
+        shared: Arc<Shared>,
+        shm: Arc<crate::shm::Registry>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let subchannels = if args.grpc_subchannels > 0 {
+            args.grpc_subchannels
+        } else {
+            std::thread::available_parallelism()
+                .map(|n| n.get().max(4))
+                .unwrap_or(16)
+        };
+        let mut sb = Storage::builder().with_grpc_subchannel_count(subchannels);
         let mut cb = StorageControl::builder();
         if let Some(e) = &args.endpoint {
             sb = sb.with_endpoint(e.clone());
@@ -46,30 +94,46 @@ impl GcsCoreService {
         }
         Ok(Self {
             shm,
-            sessions: Arc::new(Sessions::new(args.endpoint.clone())),
+            sessions: Arc::new(Sessions::new(args.endpoint.clone(), subchannels)),
             require_session: args.require_session,
             storage: sb.build().await?,
             control: cb.build().await?,
             shared,
             default_grpc: args.default_transport.eq_ignore_ascii_case("grpc"),
             chunk_size: args.chunk_size,
-            handles: RwLock::new(HashMap::new()),
+            handles: Arc::new(RwLock::new(HashMap::new())),
             next_handle: AtomicU64::new(1),
         })
     }
 
+    /// Returns a reference to the per-caller `Sessions` registry.
+    pub fn sessions(&self) -> Arc<Sessions> {
+        self.sessions.clone()
+    }
+
+    /// Returns a reference to the open `ObjectDescriptor` handle table.
+    pub fn handles(&self) -> Arc<RwLock<HashMap<u64, OpenHandle>>> {
+        self.handles.clone()
+    }
+
     fn peer<T>(req: &Request<T>) -> (u32, i32) {
-        match req.extensions().get::<UdsConnectInfo>().and_then(|i| i.peer_cred) {
+        match req
+            .extensions()
+            .get::<UdsConnectInfo>()
+            .and_then(|i| i.peer_cred)
+        {
             Some(c) => (c.uid(), c.pid().unwrap_or(0)),
             None => (u32::MAX, 0),
         }
     }
 
-    /// Clients for this request: the caller's session (x-session) or the
-    /// sidecar's own ADC when sessions are not required.
     async fn pick<T>(&self, req: &Request<T>) -> Result<(Storage, StorageControl), Status> {
         let (uid, pid) = Self::peer(req);
-        match req.metadata().get("x-session").and_then(|v| v.to_str().ok()) {
+        match req
+            .metadata()
+            .get("x-session")
+            .and_then(|v| v.to_str().ok())
+        {
             Some(id) => {
                 let s = self.sessions.get(id, uid, pid).await?;
                 Ok((s.storage.clone(), s.control.clone()))
@@ -88,46 +152,93 @@ impl GcsCoreService {
     }
 
     fn chunk(&self, requested: u32) -> usize {
-        if requested == 0 { self.chunk_size } else { requested as usize }
+        if requested == 0 {
+            self.chunk_size
+        } else {
+            requested as usize
+        }
     }
 }
 
 fn bucket_name(b: &str) -> String {
-    if b.starts_with("projects/") { b.to_string() } else { format!("projects/_/buckets/{b}") }
+    if b.starts_with("projects/") {
+        b.to_string()
+    } else {
+        format!("projects/_/buckets/{b}")
+    }
 }
 
-/// Map crate errors to gRPC statuses, preserving the HTTP code where known
-/// so the Go side can rebuild googleapi.Error / ErrObjectNotExist.
 fn to_status(e: google_cloud_storage::Error) -> Status {
-    let code = match e.http_status_code() {
-        Some(404) => tonic::Code::NotFound,
-        Some(412) => tonic::Code::FailedPrecondition,
-        Some(403) => tonic::Code::PermissionDenied,
-        Some(401) => tonic::Code::Unauthenticated,
-        Some(429) => tonic::Code::ResourceExhausted,
-        Some(c) if c >= 500 => tonic::Code::Unavailable,
-        Some(_) => tonic::Code::Unknown,
-        None => match e.status().map(|s| s.code) {
-            Some(google_cloud_gax::error::rpc::Code::NotFound) => tonic::Code::NotFound,
-            Some(google_cloud_gax::error::rpc::Code::FailedPrecondition) => tonic::Code::FailedPrecondition,
-            Some(google_cloud_gax::error::rpc::Code::PermissionDenied) => tonic::Code::PermissionDenied,
-            Some(google_cloud_gax::error::rpc::Code::Unavailable) => tonic::Code::Unavailable,
-            Some(google_cloud_gax::error::rpc::Code::Unauthenticated) => tonic::Code::Unauthenticated,
-            Some(google_cloud_gax::error::rpc::Code::ResourceExhausted) => tonic::Code::ResourceExhausted,
-            Some(google_cloud_gax::error::rpc::Code::InvalidArgument) => tonic::Code::InvalidArgument,
-            Some(google_cloud_gax::error::rpc::Code::OutOfRange) => tonic::Code::OutOfRange,
-            Some(google_cloud_gax::error::rpc::Code::Unimplemented) => tonic::Code::Unimplemented,
-            Some(google_cloud_gax::error::rpc::Code::Aborted) => tonic::Code::Aborted,
-            Some(google_cloud_gax::error::rpc::Code::DeadlineExceeded) => tonic::Code::DeadlineExceeded,
-            Some(google_cloud_gax::error::rpc::Code::Cancelled) => tonic::Code::Cancelled,
-            _ => tonic::Code::Unknown,
-        },
-    };
-    let mut st = Status::new(code, e.to_string());
-    if let Some(h) = e.http_status_code() {
-        st.metadata_mut().insert("x-http-status", h.to_string().parse().unwrap());
+    let msg = format!("{e}");
+    if let Some(s) = e.status() {
+        use google_cloud_gax::error::rpc::Code;
+        return match s.code {
+            Code::Cancelled => Status::cancelled(msg),
+            Code::Unknown => Status::unknown(msg),
+            Code::InvalidArgument => Status::invalid_argument(msg),
+            Code::DeadlineExceeded => Status::deadline_exceeded(msg),
+            Code::NotFound => Status::not_found(msg),
+            Code::AlreadyExists => Status::already_exists(msg),
+            Code::PermissionDenied => Status::permission_denied(msg),
+            Code::ResourceExhausted => Status::resource_exhausted(msg),
+            Code::FailedPrecondition => Status::failed_precondition(msg),
+            Code::Aborted => Status::aborted(msg),
+            Code::OutOfRange => Status::out_of_range(msg),
+            Code::Unimplemented => Status::unimplemented(msg),
+            Code::Internal => Status::internal(msg),
+            Code::Unavailable => Status::unavailable(msg),
+            Code::DataLoss => Status::data_loss(msg),
+            Code::Unauthenticated => Status::unauthenticated(msg),
+            _ => Status::unknown(msg),
+        };
     }
-    st
+    match e.http_status_code() {
+        Some(400) => return Status::invalid_argument(msg),
+        Some(401) => return Status::unauthenticated(msg),
+        Some(403) => return Status::permission_denied(msg),
+        Some(404) => return Status::not_found(msg),
+        Some(408) | Some(504) => return Status::deadline_exceeded(msg),
+        Some(409) => return Status::aborted(msg),
+        Some(412) => return Status::failed_precondition(msg),
+        Some(416) => return Status::out_of_range(msg),
+        Some(429) => return Status::resource_exhausted(msg),
+        Some(499) => return Status::cancelled(msg),
+        Some(501) => return Status::unimplemented(msg),
+        Some(502) | Some(503) => return Status::unavailable(msg),
+        _ => {}
+    }
+    if e.is_authentication() {
+        return Status::unauthenticated(msg);
+    }
+    let dbg = format!("{e:?}");
+    if dbg.contains("status_code: Some(401)")
+        || dbg.contains("Invalid Credentials")
+        || dbg.contains("lent token expired")
+    {
+        return Status::unauthenticated(msg);
+    }
+    if dbg.contains("status_code: Some(403)") {
+        return Status::permission_denied(msg);
+    }
+    if dbg.contains("status_code: Some(404)") {
+        return Status::not_found(msg);
+    }
+    if dbg.contains("status_code: Some(412)") {
+        return Status::failed_precondition(msg);
+    }
+    Status::internal(msg)
+}
+
+fn read_range(offset: i64, length: i64) -> Option<ReadRange> {
+    if offset == 0 && length < 0 {
+        None
+    } else if offset < 0 {
+        Some(ReadRange::tail((-offset) as u64))
+    } else if length < 0 {
+        Some(ReadRange::offset(offset as u64))
+    } else {
+        Some(ReadRange::segment(offset as u64, length as u64))
+    }
 }
 
 fn meta_from_highlights(h: &google_cloud_storage::model_ext::ObjectHighlights) -> pb::ObjectMeta {
@@ -152,40 +263,28 @@ fn meta_from_object(o: &google_cloud_storage::model::Object) -> pb::ObjectMeta {
     }
 }
 
-fn read_range(offset: i64, length: i64) -> Option<ReadRange> {
-    if length > 0 {
-        Some(ReadRange::segment(offset.max(0) as u64, length as u64))
-    } else if length < 0 && offset < 0 {
-        Some(ReadRange::tail((-offset) as u64))
-    } else if offset > 0 {
-        Some(ReadRange::offset(offset as u64))
-    } else {
-        None
-    }
-}
-
-/// Batch crate buffers into ReadChunk messages of ~`chunk` bytes WITHOUT
-/// concatenating them (repeated bytes): zero server-side copies; prost copies
-/// each piece once into the HTTP/2 frame buffer when encoding.
 async fn pump_reader(
     mut resp: google_cloud_storage::read_object::ReadObjectResponse,
-    meta: Option<pb::ObjectMeta>,
+    first_meta: Option<pb::ObjectMeta>,
     chunk: usize,
     tx: mpsc::Sender<Result<pb::ReadChunk, Status>>,
 ) {
-    let mut meta = meta;
-    let mut acc: Vec<Bytes> = Vec::new();
-    let mut acc_len = 0usize;
+    let mut meta = first_meta;
+    let mut parts: Vec<Bytes> = Vec::with_capacity(64);
+    let mut buffered = 0usize;
     loop {
         match resp.next().await {
             Some(Ok(b)) => {
-                acc_len += b.len();
-                acc.push(b);
-                if acc_len >= chunk {
-                    let c = pb::ReadChunk { data: std::mem::take(&mut acc), meta: meta.take() };
-                    acc_len = 0;
-                    if tx.send(Ok(c)).await.is_err() {
-                        return; // client went away (cancellation)
+                buffered += b.len();
+                parts.push(b);
+                if buffered >= chunk {
+                    let msg = pb::ReadChunk {
+                        data: std::mem::take(&mut parts),
+                        meta: meta.take(),
+                    };
+                    buffered = 0;
+                    if tx.send(Ok(msg)).await.is_err() {
+                        return;
                     }
                 }
             }
@@ -193,30 +292,37 @@ async fn pump_reader(
                 let _ = tx.send(Err(to_status(e))).await;
                 return;
             }
-            None => break,
+            None => {
+                if !parts.is_empty() || meta.is_some() {
+                    let _ = tx
+                        .send(Ok(pb::ReadChunk {
+                            data: parts,
+                            meta: meta.take(),
+                        }))
+                        .await;
+                }
+                return;
+            }
         }
-    }
-    if acc_len > 0 || meta.is_some() {
-        let c = pb::ReadChunk { data: std::mem::take(&mut acc), meta: meta.take() };
-        let _ = tx.send(Ok(c)).await;
     }
 }
 
-/// Bridges the client-streaming upload into the crate's StreamingSource.
 struct ChanSource {
     rx: mpsc::Receiver<Bytes>,
     exact: Option<u64>,
 }
+
 impl StreamingSource for ChanSource {
     type Error = std::io::Error;
     async fn next(&mut self) -> Option<Result<Bytes, Self::Error>> {
         self.rx.recv().await.map(Ok)
     }
     async fn size_hint(&self) -> Result<SizeHint, Self::Error> {
-        Ok(match self.exact {
-            Some(n) => SizeHint::with_exact(n),
-            None => SizeHint::new(),
-        })
+        let mut h = SizeHint::new();
+        if let Some(n) = self.exact {
+            h.set_exact(n);
+        }
+        Ok(h)
     }
 }
 
@@ -226,117 +332,170 @@ impl GcsCore for GcsCoreService {
     type ReadRangeStream = RespStream<pb::ReadChunk>;
     type ReadObjectShmStream = RespStream<pb::ShmChunk>;
 
-    async fn read_object_shm(&self, req: Request<pb::ReadObjectShmRequest>) -> Result<Response<Self::ReadObjectShmStream>, Status> {
+    async fn ping(
+        &self,
+        req: Request<pb::PingRequest>,
+    ) -> Result<Response<pb::PingResponse>, Status> {
         self.shared.touch();
+        Ok(Response::new(pb::PingResponse {
+            payload: req.into_inner().payload,
+        }))
+    }
+
+    async fn read_object_shm(
+        &self,
+        req: Request<pb::ReadObjectShmRequest>,
+    ) -> Result<Response<Self::ReadObjectShmStream>, Status> {
+        self.shared.touch();
+        let (uid, pid) = Self::peer(&req);
         let (storage, _) = self.pick(&req).await?;
-        let r = req.into_inner();
-        let rd = r.read.ok_or_else(|| Status::invalid_argument("missing read"))?;
-        let region = self.shm.get(r.region).await.ok_or_else(|| Status::not_found("unknown shm region"))?;
-        if r.base_offset as usize + r.capacity as usize > region.size {
-            return Err(Status::invalid_argument("base_offset+capacity exceeds region"));
+        let outer = req.into_inner();
+        let r = outer
+            .read
+            .ok_or_else(|| Status::invalid_argument("missing read"))?;
+        let reg = self
+            .shm
+            .get(outer.region)
+            .await
+            .ok_or_else(|| Status::not_found("unknown shm region"))?;
+        if uid != u32::MAX && (reg.peer_uid != uid || (reg.peer_pid > 0 && reg.peer_pid != pid)) {
+            return Err(Status::permission_denied(
+                "shm region is bound to another process",
+            ));
         }
-        let bucket = bucket_name(&rd.bucket);
-        let (tx, rx) = mpsc::channel::<Result<pb::ShmChunk, Status>>(8);
-        // Obtain the crate's response stream (JSON or gRPC) exactly as read_object does.
-        let (resp, meta) = if self.use_grpc(rd.transport) {
-            let mut open = storage.open_object(bucket, rd.object.clone());
-            if rd.generation > 0 {
-                open = open.set_generation(rd.generation);
-            }
-            let range = read_range(rd.offset, rd.length).unwrap_or(ReadRange::offset(0));
-            let (desc, resp) = open.send_and_read(range).await.map_err(to_status)?;
-            let meta = meta_from_object(&desc.object());
-            std::mem::forget(desc); // POC: keep session until process exit (shm path only)
-            (resp, meta)
-        } else {
-            let mut q = storage.read_object(bucket, rd.object.clone());
-            if let Some(range) = read_range(rd.offset, rd.length) {
-                q = q.set_read_range(range);
-            }
-            if rd.generation > 0 {
-                q = q.set_generation(rd.generation);
-            }
-            let resp = q.send().await.map_err(to_status)?;
-            let meta = meta_from_highlights(&resp.object());
-            (resp, meta)
-        };
-        let base = r.base_offset as usize;
-        let cap = r.capacity as usize;
-        let want = self.chunk(rd.chunk_size);
-        tokio::spawn(async move {
-            let mut resp = resp;
-            let mut meta = Some(meta);
-            let mut off = 0usize; // relative to base
-            let mut pending_start = 0usize;
-            loop {
-                match resp.next().await {
-                    Some(Ok(b)) => {
-                        if off + b.len() > cap {
-                            let _ = tx.send(Err(Status::resource_exhausted("shm capacity exceeded"))).await;
-                            return;
-                        }
-                        if let Err(e) = region.write_at(base + off, &b) {
-                            let _ = tx.send(Err(Status::internal(e))).await;
-                            return;
-                        }
-                        off += b.len();
-                        // Coalesce descriptors to ~chunk size to keep control traffic low.
-                        if off - pending_start >= want {
-                            let c = pb::ShmChunk { offset: (base + pending_start) as u64, len: (off - pending_start) as u64, meta: meta.take() };
-                            pending_start = off;
-                            if tx.send(Ok(c)).await.is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Some(Err(e)) => {
-                        let _ = tx.send(Err(to_status(e))).await;
-                        return;
-                    }
-                    None => break,
-                }
-            }
-            if off > pending_start || meta.is_some() {
-                let c = pb::ShmChunk { offset: (base + pending_start) as u64, len: (off - pending_start) as u64, meta: meta.take() };
-                let _ = tx.send(Ok(c)).await;
-            }
-        });
-        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
-    }
-
-    async fn ping(&self, req: Request<pb::PingRequest>) -> Result<Response<pb::PingResponse>, Status> {
-        self.shared.touch();
-        Ok(Response::new(pb::PingResponse { payload: req.into_inner().payload }))
-    }
-
-    async fn read_object(&self, req: Request<pb::ReadObjectRequest>) -> Result<Response<Self::ReadObjectStream>, Status> {
-        self.shared.touch();
-        let (storage, _) = self.pick(&req).await?;
-        let r = req.into_inner();
-        let chunk = self.chunk(r.chunk_size);
-        let (tx, rx) = mpsc::channel(16);
+        let write_guard = reg.try_lock_write().ok_or_else(|| {
+            Status::failed_precondition("shm region is already in use by an active read")
+        })?;
+        let base = outer.base_offset as usize;
+        let cap = outer.capacity as usize;
+        if base.saturating_add(cap) > reg.size {
+            return Err(Status::out_of_range("base_offset+capacity > region size"));
+        }
+        let range = read_range(r.offset, r.length);
         let bucket = bucket_name(&r.bucket);
+        let (tx, rx) = mpsc::channel(16);
+
         if self.use_grpc(r.transport) {
-            // gRPC CloudPath: BidiReadObject session for a single range.
-            let mut open = storage.open_object(bucket, r.object.clone());
+            let mut open = storage.open_object(bucket, r.object);
             if r.generation > 0 {
                 open = open.set_generation(r.generation);
             }
             if r.if_generation_match >= 0 {
                 open = open.set_if_generation_match(r.if_generation_match);
             }
-            // One RPC: open + first range in the same BidiReadObject call (same
-            // round-trip count as the native SDK's BidiRead path).
-            let range = read_range(r.offset, r.length).unwrap_or(ReadRange::offset(0));
-            let (desc, resp) = open.send_and_read(range).await.map_err(to_status)?;
-            let meta = meta_from_object(&desc.object());
+            let (desc, mut resp) = open
+                .send_and_read(range.unwrap_or_else(|| ReadRange::offset(0)))
+                .await
+                .map_err(to_status)?;
+            let mut meta = Some(meta_from_object(&desc.object()));
             tokio::spawn(async move {
-                let _keep = desc; // keep the session alive for the read
-                pump_reader(resp, Some(meta), chunk, tx).await;
+                let mut cur = base;
+                while let Some(part) = resp.next().await {
+                    match part {
+                        Ok(b) => {
+                            if cur - base + b.len() > cap {
+                                let _ = tx
+                                    .send(Err(Status::out_of_range("object > shm capacity")))
+                                    .await;
+                                return;
+                            }
+                            if let Err(e) = write_guard.write_at(cur, &b) {
+                                let _ = tx.send(Err(Status::internal(e))).await;
+                                return;
+                            }
+                            cur += b.len();
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(to_status(e))).await;
+                            return;
+                        }
+                    }
+                }
+                let _ = tx
+                    .send(Ok(pb::ShmChunk {
+                        offset: base as u64,
+                        len: (cur - base) as u64,
+                        meta: meta.take(),
+                    }))
+                    .await;
             });
         } else {
-            let mut rd = storage.read_object(bucket, r.object.clone());
-            if let Some(range) = read_range(r.offset, r.length) {
+            let mut rd = storage.read_object(bucket, r.object);
+            if let Some(range) = range {
+                rd = rd.set_read_range(range);
+            }
+            if r.generation > 0 {
+                rd = rd.set_generation(r.generation);
+            }
+            if r.if_generation_match >= 0 {
+                rd = rd.set_if_generation_match(r.if_generation_match);
+            }
+            let mut resp = rd.send().await.map_err(to_status)?;
+            let mut meta = Some(meta_from_highlights(&resp.object()));
+            tokio::spawn(async move {
+                let mut cur = base;
+                while let Some(part) = resp.next().await {
+                    match part {
+                        Ok(b) => {
+                            if cur - base + b.len() > cap {
+                                let _ = tx
+                                    .send(Err(Status::out_of_range("object > shm capacity")))
+                                    .await;
+                                return;
+                            }
+                            if let Err(e) = write_guard.write_at(cur, &b) {
+                                let _ = tx.send(Err(Status::internal(e))).await;
+                                return;
+                            }
+                            cur += b.len();
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(to_status(e))).await;
+                            return;
+                        }
+                    }
+                }
+                let _ = tx
+                    .send(Ok(pb::ShmChunk {
+                        offset: base as u64,
+                        len: (cur - base) as u64,
+                        meta: meta.take(),
+                    }))
+                    .await;
+            });
+        }
+        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    async fn read_object(
+        &self,
+        req: Request<pb::ReadObjectRequest>,
+    ) -> Result<Response<Self::ReadObjectStream>, Status> {
+        self.shared.touch();
+        let (storage, _) = self.pick(&req).await?;
+        let r = req.into_inner();
+        let chunk = self.chunk(r.chunk_size);
+        let range = read_range(r.offset, r.length);
+        let bucket = bucket_name(&r.bucket);
+        let (tx, rx) = mpsc::channel(16);
+
+        if self.use_grpc(r.transport) {
+            let mut open = storage.open_object(bucket, r.object);
+            if r.generation > 0 {
+                open = open.set_generation(r.generation);
+            }
+            if r.if_generation_match >= 0 {
+                open = open.set_if_generation_match(r.if_generation_match);
+            }
+            let (desc, resp) = open
+                .send_and_read(range.unwrap_or_else(|| ReadRange::offset(0)))
+                .await
+                .map_err(to_status)?;
+            let meta = meta_from_object(&desc.object());
+            tokio::spawn(pump_reader(resp, Some(meta), chunk, tx));
+        } else {
+            let mut rd = storage.read_object(bucket, r.object);
+            if let Some(range) = range {
                 rd = rd.set_read_range(range);
             }
             if r.generation > 0 {
@@ -352,8 +511,12 @@ impl GcsCore for GcsCoreService {
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
-    async fn open_object(&self, req: Request<pb::OpenObjectRequest>) -> Result<Response<pb::OpenObjectResponse>, Status> {
+    async fn open_object(
+        &self,
+        req: Request<pb::OpenObjectRequest>,
+    ) -> Result<Response<pb::OpenObjectResponse>, Status> {
         self.shared.touch();
+        let (uid, pid) = Self::peer(&req);
         let (storage, _) = self.pick(&req).await?;
         let r = req.into_inner();
         let mut open = storage.open_object(bucket_name(&r.bucket), r.object);
@@ -363,23 +526,42 @@ impl GcsCore for GcsCoreService {
         let desc = open.send().await.map_err(to_status)?;
         let meta = meta_from_object(&desc.object());
         let h = self.next_handle.fetch_add(1, Ordering::Relaxed);
-        self.handles.write().unwrap().insert(h, Arc::new(desc));
-        Ok(Response::new(pb::OpenObjectResponse { handle: h, meta: Some(meta) }))
+        self.handles.write().unwrap().insert(
+            h,
+            OpenHandle {
+                uid,
+                pid,
+                desc: Arc::new(desc),
+            },
+        );
+        Ok(Response::new(pb::OpenObjectResponse {
+            handle: h,
+            meta: Some(meta),
+        }))
     }
 
-    async fn read_range(&self, req: Request<pb::ReadRangeRequest>) -> Result<Response<Self::ReadRangeStream>, Status> {
+    async fn read_range(
+        &self,
+        req: Request<pb::ReadRangeRequest>,
+    ) -> Result<Response<Self::ReadRangeStream>, Status> {
         self.shared.touch();
+        let (uid, pid) = Self::peer(&req);
         let r = req.into_inner();
-        let desc = self
-            .handles
-            .read()
-            .unwrap()
-            .get(&r.handle)
-            .cloned()
-            .ok_or_else(|| Status::not_found("unknown handle"))?;
+        let desc = {
+            let guard = self.handles.read().unwrap();
+            let entry = guard
+                .get(&r.handle)
+                .ok_or_else(|| Status::not_found("unknown handle"))?;
+            if entry.uid != uid || entry.pid != pid {
+                return Err(Status::permission_denied(
+                    "handle is bound to another process",
+                ));
+            }
+            entry.desc.clone()
+        };
         let chunk = self.chunk(r.chunk_size);
         let (tx, rx) = mpsc::channel(16);
-        let range = read_range(r.offset, r.length).unwrap_or(ReadRange::offset(0));
+        let range = read_range(r.offset, r.length).unwrap_or_else(|| ReadRange::offset(0));
         tokio::spawn(async move {
             let resp = desc.read_range(range).await;
             pump_reader(resp, None, chunk, tx).await;
@@ -387,25 +569,45 @@ impl GcsCore for GcsCoreService {
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 
-    async fn close_object(&self, req: Request<pb::CloseObjectRequest>) -> Result<Response<pb::Empty>, Status> {
+    async fn close_object(
+        &self,
+        req: Request<pb::CloseObjectRequest>,
+    ) -> Result<Response<pb::Empty>, Status> {
         self.shared.touch();
-        self.handles.write().unwrap().remove(&req.into_inner().handle);
+        let (uid, pid) = Self::peer(&req);
+        let handle = req.into_inner().handle;
+        {
+            let mut guard = self.handles.write().unwrap();
+            if let Some(entry) = guard.get(&handle)
+                && (entry.uid != uid || entry.pid != pid)
+            {
+                return Err(Status::permission_denied(
+                    "handle is bound to another process",
+                ));
+            }
+            guard.remove(&handle);
+        }
         Ok(Response::new(pb::Empty {}))
     }
 
-    async fn write_object(&self, req: Request<Streaming<pb::WriteRequest>>) -> Result<Response<pb::WriteObjectResponse>, Status> {
+    async fn write_object(
+        &self,
+        req: Request<Streaming<pb::WriteRequest>>,
+    ) -> Result<Response<pb::WriteObjectResponse>, Status> {
         self.shared.touch();
         let (storage, _) = self.pick(&req).await?;
         let mut inbound = req.into_inner();
         let header = match inbound.message().await? {
-            Some(pb::WriteRequest { msg: Some(pb::write_request::Msg::Header(h)) }) => h,
+            Some(pb::WriteRequest {
+                msg: Some(pb::write_request::Msg::Header(h)),
+            }) => h,
             _ => return Err(Status::invalid_argument("first message must be header")),
         };
         let bucket = bucket_name(&header.bucket);
         let object = header.object.clone();
 
+        #[cfg(google_cloud_unstable_storage_bidi)]
         if self.use_grpc(header.transport) {
-            // gRPC CloudPath: appendable object (BidiWriteObject).
             let mut open = storage.open_appendable_object(bucket.clone(), object.clone());
             if !header.content_type.is_empty() {
                 open = open.set_content_type(header.content_type.clone());
@@ -417,7 +619,7 @@ impl GcsCore for GcsCoreService {
                 Ok(mut w) => {
                     while let Some(m) = inbound.message().await? {
                         if let Some(pb::write_request::Msg::Data(d)) = m.msg {
-                            w.append(d).await.map_err(to_status)?; // prost gives us Bytes: no copy here
+                            w.append(d).await.map_err(to_status)?;
                         }
                     }
                     let obj = w.finalize().await.map_err(to_status)?;
@@ -432,15 +634,20 @@ impl GcsCore for GcsCoreService {
                     if st.code() != tonic::Code::Unimplemented {
                         return Err(st);
                     }
-                    // Regional bucket without appendable object support: fall through to write_object.
+                    // Standard regional buckets reject appendable objects with UNIMPLEMENTED;
+                    // fall back transparently to write_object.
                 }
             }
         }
 
-        // JSON: single-shot when known_size >= 0 (client buffered up to ChunkSize), else resumable.
         let (tx, rx) = mpsc::channel::<Bytes>(16);
-        let exact = if header.known_size >= 0 { Some(header.known_size as u64) } else { None };
-        let mut wo = storage.write_object::<_, _, _, ChanSource>(bucket, object, ChanSource { rx, exact });
+        let exact = if header.known_size >= 0 {
+            Some(header.known_size as u64)
+        } else {
+            None
+        };
+        let mut wo =
+            storage.write_object::<_, _, _, ChanSource>(bucket, object, ChanSource { rx, exact });
         if !header.content_type.is_empty() {
             wo = wo.set_content_type(header.content_type.clone());
         }
@@ -453,11 +660,11 @@ impl GcsCore for GcsCoreService {
         let upload = tokio::spawn(async move { wo.send_buffered().await });
         let mut pump_err: Option<Status> = None;
         while let Some(m) = inbound.message().await? {
-            if let Some(pb::write_request::Msg::Data(d)) = m.msg {
-                if tx.send(d).await.is_err() {
-                    pump_err = Some(Status::aborted("upload aborted"));
-                    break;
-                }
+            if let Some(pb::write_request::Msg::Data(d)) = m.msg
+                && tx.send(d).await.is_err()
+            {
+                pump_err = Some(Status::aborted("upload aborted"));
+                break;
             }
         }
         drop(tx);
@@ -475,7 +682,10 @@ impl GcsCore for GcsCoreService {
         }))
     }
 
-    async fn list_objects(&self, req: Request<pb::ListObjectsRequest>) -> Result<Response<pb::ListObjectsResponse>, Status> {
+    async fn list_objects(
+        &self,
+        req: Request<pb::ListObjectsRequest>,
+    ) -> Result<Response<pb::ListObjectsResponse>, Status> {
         self.shared.touch();
         let (_, control) = self.pick(&req).await?;
         let r = req.into_inner();
@@ -516,7 +726,10 @@ impl GcsCore for GcsCoreService {
         }))
     }
 
-    async fn list_buckets(&self, req: Request<pb::ListBucketsRequest>) -> Result<Response<pb::ListBucketsResponse>, Status> {
+    async fn list_buckets(
+        &self,
+        req: Request<pb::ListBucketsRequest>,
+    ) -> Result<Response<pb::ListBucketsResponse>, Status> {
         self.shared.touch();
         let (_, control) = self.pick(&req).await?;
         let r = req.into_inner();
@@ -539,7 +752,11 @@ impl GcsCore for GcsCoreService {
                 .buckets
                 .iter()
                 .map(|b| pb::ListedBucket {
-                    name: b.name.strip_prefix("projects/_/buckets/").unwrap_or(&b.name).to_string(),
+                    name: b
+                        .name
+                        .strip_prefix("projects/_/buckets/")
+                        .unwrap_or(&b.name)
+                        .to_string(),
                     location: b.location.clone(),
                     storage_class: b.storage_class.clone(),
                     metageneration: b.metageneration,
@@ -550,8 +767,10 @@ impl GcsCore for GcsCoreService {
         }))
     }
 
-    async fn stats(&self, req: Request<pb::StatsRequest>) -> Result<Response<pb::StatsResponse>, Status> {
-        // Deliberately not counted as activity.
+    async fn stats(
+        &self,
+        req: Request<pb::StatsRequest>,
+    ) -> Result<Response<pb::StatsResponse>, Status> {
         if req.into_inner().reset_peak_rss {
             let _ = std::fs::write("/proc/self/clear_refs", b"5");
         }
@@ -579,46 +798,66 @@ impl GcsCore for GcsCoreService {
         }))
     }
 
-    async fn create_session(&self, req: Request<pb::CreateSessionRequest>) -> Result<Response<pb::CreateSessionResponse>, Status> {
+    async fn create_session(
+        &self,
+        req: Request<pb::CreateSessionRequest>,
+    ) -> Result<Response<pb::CreateSessionResponse>, Status> {
         self.shared.touch();
         let (uid, pid) = Self::peer(&req);
         if uid == u32::MAX {
-            return Err(Status::permission_denied("sessions require a UDS connection with peer credentials"));
+            return Err(Status::permission_denied(
+                "sessions require a UDS connection with peer credentials",
+            ));
         }
         let r = req.into_inner();
         if r.access_token.is_empty() {
             return Err(Status::invalid_argument("access_token required"));
         }
-        let qp = if r.quota_project.is_empty() { None } else { Some(r.quota_project) };
+        let qp = if r.quota_project.is_empty() {
+            None
+        } else {
+            Some(r.quota_project)
+        };
         let s = self
             .sessions
             .create(r.access_token, r.expiry_unix_secs, qp, uid, pid)
             .await
             .map_err(|e| Status::internal(format!("session client: {e}")))?;
         let n = self.sessions.len().await;
-        tracing::info!(sessions = n, pid, "session created"); // token never logged
-        Ok(Response::new(pb::CreateSessionResponse { session_id: s.id.clone() }))
+        tracing::info!(sessions = n, pid, "session created");
+        Ok(Response::new(pb::CreateSessionResponse {
+            session_id: s.id.clone(),
+        }))
     }
 
-    async fn update_token(&self, req: Request<pb::UpdateTokenRequest>) -> Result<Response<pb::Empty>, Status> {
+    async fn update_token(
+        &self,
+        req: Request<pb::UpdateTokenRequest>,
+    ) -> Result<Response<pb::Empty>, Status> {
         self.shared.touch();
         let (uid, pid) = Self::peer(&req);
         let r = req.into_inner();
+        if r.access_token.is_empty() {
+            return Err(Status::invalid_argument("access_token required"));
+        }
         let s = self.sessions.get(&r.session_id, uid, pid).await?;
         s.token.set(r.access_token, r.expiry_unix_secs);
         Ok(Response::new(pb::Empty {}))
     }
 
-    async fn close_session(&self, req: Request<pb::SessionRef>) -> Result<Response<pb::Empty>, Status> {
+    async fn close_session(
+        &self,
+        req: Request<pb::SessionRef>,
+    ) -> Result<Response<pb::Empty>, Status> {
+        self.shared.touch();
         let (uid, pid) = Self::peer(&req);
         let r = req.into_inner();
-        let _ = self.sessions.get(&r.session_id, uid, pid).await?;
-        self.sessions.remove(&r.session_id).await;
+        self.sessions.close(&r.session_id, uid, pid).await?;
         Ok(Response::new(pb::Empty {}))
     }
 
     async fn shutdown(&self, _req: Request<pb::Empty>) -> Result<Response<pb::Empty>, Status> {
-        self.shared.shutdown.notify_waiters();
+        self.shared.trigger_shutdown();
         Ok(Response::new(pb::Empty {}))
     }
 }

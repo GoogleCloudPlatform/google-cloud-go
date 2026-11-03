@@ -274,8 +274,8 @@ func main() {
 			putObj(*prefix+"/"+name, data)
 			fmt.Println("created", *prefix+"/"+name)
 		}
-		// Ensure at least 100 objects exist in the bucket for Workload 6 (list-objects-100).
-		existing, _ := (nativeOpener{c: gc}).ListObjectsN(ctx, *bucket, "", 100)
+		// Ensure at least 100 objects exist under <prefix>/list/ for Workload 6 (list-objects-100).
+		existing, _ := (nativeOpener{c: gc}).ListObjectsN(ctx, *bucket, *prefix+"/list/", 100)
 		if existing < 100 {
 			var wg sync.WaitGroup
 			sem := make(chan struct{}, 16)

@@ -1,0 +1,330 @@
+{
+  "timeSeries": [
+    {
+      "metric": {
+        "labels": {
+          "state": "buffered"
+        },
+        "type": "agent.googleapis.com/memory/percent_used"
+      },
+      "resource": {
+        "type": "gce_instance",
+        "labels": {
+          "zone": "us-central1-b",
+          "project_id": "gcs-go-sdk-playground",
+          "instance_id": "3697964452583574513"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:03:13.559362Z",
+            "endTime": "2026-11-03T11:03:13.559362Z"
+          },
+          "value": {
+            "doubleValue": 0.0035854661754497648
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:02:13.558273Z",
+            "endTime": "2026-11-03T11:02:13.558273Z"
+          },
+          "value": {
+            "doubleValue": 0.003583324799566843
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:01:13.558393Z",
+            "endTime": "2026-11-03T11:01:13.558393Z"
+          },
+          "value": {
+            "doubleValue": 0.0035811837289161023
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:00:13.558293Z",
+            "endTime": "2026-11-03T11:00:13.558293Z"
+          },
+          "value": {
+            "doubleValue": 0.0035790409881191645
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T10:59:13.558724Z",
+            "endTime": "2026-11-03T10:59:13.558724Z"
+          },
+          "value": {
+            "doubleValue": 0.003575827949480167
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "cached"
+        },
+        "type": "agent.googleapis.com/memory/percent_used"
+      },
+      "resource": {
+        "type": "gce_instance",
+        "labels": {
+          "project_id": "gcs-go-sdk-playground",
+          "instance_id": "3697964452583574513",
+          "zone": "us-central1-b"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:03:13.559362Z",
+            "endTime": "2026-11-03T11:03:13.559362Z"
+          },
+          "value": {
+            "doubleValue": 0.23408171006883383
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:02:13.558273Z",
+            "endTime": "2026-11-03T11:02:13.558273Z"
+          },
+          "value": {
+            "doubleValue": 0.23407323285195603
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:01:13.558393Z",
+            "endTime": "2026-11-03T11:01:13.558393Z"
+          },
+          "value": {
+            "doubleValue": 0.23406102575998225
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:00:13.558293Z",
+            "endTime": "2026-11-03T11:00:13.558293Z"
+          },
+          "value": {
+            "doubleValue": 0.23405299520972606
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T10:59:13.558724Z",
+            "endTime": "2026-11-03T10:59:13.558724Z"
+          },
+          "value": {
+            "doubleValue": 0.23405093012909861
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "free"
+        },
+        "type": "agent.googleapis.com/memory/percent_used"
+      },
+      "resource": {
+        "type": "gce_instance",
+        "labels": {
+          "project_id": "gcs-go-sdk-playground",
+          "instance_id": "3697964452583574513",
+          "zone": "us-central1-b"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:03:13.559362Z",
+            "endTime": "2026-11-03T11:03:13.559362Z"
+          },
+          "value": {
+            "doubleValue": 98.054884331966548
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:02:13.558273Z",
+            "endTime": "2026-11-03T11:02:13.558273Z"
+          },
+          "value": {
+            "doubleValue": 98.190752041359445
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:01:13.558393Z",
+            "endTime": "2026-11-03T11:01:13.558393Z"
+          },
+          "value": {
+            "doubleValue": 98.150374049417366
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:00:13.558293Z",
+            "endTime": "2026-11-03T11:00:13.558293Z"
+          },
+          "value": {
+            "doubleValue": 98.3019783503966
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T10:59:13.558724Z",
+            "endTime": "2026-11-03T10:59:13.558724Z"
+          },
+          "value": {
+            "doubleValue": 98.098075773321
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "slab"
+        },
+        "type": "agent.googleapis.com/memory/percent_used"
+      },
+      "resource": {
+        "type": "gce_instance",
+        "labels": {
+          "instance_id": "3697964452583574513",
+          "zone": "us-central1-b",
+          "project_id": "gcs-go-sdk-playground"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:03:13.559362Z",
+            "endTime": "2026-11-03T11:03:13.559362Z"
+          },
+          "value": {
+            "doubleValue": 0.073744998313523782
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:02:13.558273Z",
+            "endTime": "2026-11-03T11:02:13.558273Z"
+          },
+          "value": {
+            "doubleValue": 0.073710742879533456
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:01:13.558393Z",
+            "endTime": "2026-11-03T11:01:13.558393Z"
+          },
+          "value": {
+            "doubleValue": 0.073668993871815192
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:00:13.558293Z",
+            "endTime": "2026-11-03T11:00:13.558293Z"
+          },
+          "value": {
+            "doubleValue": 0.073672209676710065
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T10:59:13.558724Z",
+            "endTime": "2026-11-03T10:59:13.558724Z"
+          },
+          "value": {
+            "doubleValue": 0.07364116328138437
+          }
+        }
+      ]
+    },
+    {
+      "metric": {
+        "labels": {
+          "state": "used"
+        },
+        "type": "agent.googleapis.com/memory/percent_used"
+      },
+      "resource": {
+        "type": "gce_instance",
+        "labels": {
+          "project_id": "gcs-go-sdk-playground",
+          "instance_id": "3697964452583574513",
+          "zone": "us-central1-b"
+        }
+      },
+      "metricKind": "GAUGE",
+      "valueType": "DOUBLE",
+      "points": [
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:03:13.559362Z",
+            "endTime": "2026-11-03T11:03:13.559362Z"
+          },
+          "value": {
+            "doubleValue": 1.633703493475638
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:02:13.558273Z",
+            "endTime": "2026-11-03T11:02:13.558273Z"
+          },
+          "value": {
+            "doubleValue": 1.4978806581095006
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:01:13.558393Z",
+            "endTime": "2026-11-03T11:01:13.558393Z"
+          },
+          "value": {
+            "doubleValue": 1.538314747221919
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T11:00:13.558293Z",
+            "endTime": "2026-11-03T11:00:13.558293Z"
+          },
+          "value": {
+            "doubleValue": 1.3867174037288466
+          }
+        },
+        {
+          "interval": {
+            "startTime": "2026-11-03T10:59:13.558724Z",
+            "endTime": "2026-11-03T10:59:13.558724Z"
+          },
+          "value": {
+            "doubleValue": 1.5906563053190295
+          }
+        }
+      ]
+    }
+  ],
+  "unit": "%"
+}

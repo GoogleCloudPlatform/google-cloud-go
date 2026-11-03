@@ -1,0 +1,15 @@
+backend=go-grpc-cp bucket=cpriti-thickthin-poc-use1 parallel=1 vcpus=192
+backend    style  op      size          p50       p90       p99       max      mean  p50 MiB/s  agg MiB/s   ffi/op cpu s/GiB   cpu %  peak MiB
+go-grpc-cp whole  write   1MiB        345ms     414ms     414ms     423ms     335ms        2.9        3.1      0.0     21.90    0.0%       131
+go-grpc-cp whole  read    1MiB        308ms     384ms     395ms     524ms     325ms        3.2        3.1      0.0     21.90    0.0%       131
+go-grpc-cp whole  write   16MiB       525ms     619ms     619ms     626ms     552ms       30.5       21.5      0.0      2.88    0.0%       219
+go-grpc-cp whole  read    16MiB       798ms     873ms     883ms     972ms     808ms       20.1       21.5      0.0      2.88    0.0%       219
+go-grpc-cp whole  write   128MiB     1.557s    1.907s    1.907s    2.144s    1.648s       82.2       33.5      0.0      2.30    0.0%       558
+go-grpc-cp whole  read    128MiB     4.511s    4.945s    5.167s    5.261s     4.55s       28.4       33.5      0.0      2.30    0.0%       558
+go-grpc-cp 32k    write   1MiB        425ms     435ms     435ms     442ms     410ms        2.4        2.9      0.0      5.95    0.0%       552
+go-grpc-cp 32k    read    1MiB        307ms     381ms     382ms     393ms     321ms        3.3        2.9      0.0      5.95    0.0%       552
+go-grpc-cp 32k    write   16MiB       484ms     578ms     578ms     580ms     496ms       33.1       22.8      0.0      2.72    0.0%       631
+go-grpc-cp 32k    read    16MiB       790ms     880ms     961ms    1.056s     769ms       20.3       22.8      0.0      2.72    0.0%       631
+go-grpc-cp 32k    write   128MiB      1.79s    1.994s    1.994s    2.082s    1.811s       71.5       33.1      0.0      2.27    0.0%       443
+go-grpc-cp 32k    read    128MiB     4.504s    5.049s    5.562s    5.695s    4.553s       28.4       33.1      0.0      2.27    0.0%       443
+go-grpc-cp -      list    -           216ms     221ms     221ms     224ms     182ms          -          -      0.0   2.90ms/call    0.0%    443  (objects=0)

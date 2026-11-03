@@ -1,0 +1,4 @@
+client init: 31.280515ms (sidecar spawn 8.723115ms, pid 10926, owned=true, how=, session=false)
+grpc-chunks (copy into p)    p50=1.573s    min=1.235s       81.4 MiB/s  cpu 2.30 s/GiB (Go 0.61 + sidecar 1.70)
+shm (copy into p)            p50=1.572s    min=1.239s       81.4 MiB/s  cpu 1.27 s/GiB (Go 0.11 + sidecar 1.16)
+shm (zero-copy, lend slice)  p50=1.689s    min=1.219s       75.8 MiB/s  cpu 1.14 s/GiB (Go 0.00 + sidecar 1.14)

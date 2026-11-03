@@ -1,0 +1,306 @@
+=== STAGE: init-ops-agent 2026-11-03T10:27:52Z ===
+=== Installing Google Cloud Ops Agent for agent.googleapis.com/memory/percent_used ===
+Adding agent repository for ubuntu.
+deb https://packages.cloud.google.com/apt google-cloud-ops-agent-noble-all main
+Warning: apt-key is deprecated. Manage keyring files in trusted.gpg.d instead (see apt-key(8)).
+OK
+Reading package lists...
+Building dependency tree...
+Reading state information...
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Hit:1 https://packages.cloud.google.com/apt google-cloud-ops-agent-noble-all InRelease
+Reading package lists...
+W: https://packages.cloud.google.com/apt/dists/google-cloud-ops-agent-noble-all/InRelease: Key is stored in legacy trusted.gpg keyring (/etc/apt/trusted.gpg), see the DEPRECATION section in apt-key(8) for details.
+Reading package lists...
+Building dependency tree...
+Reading state information...
+0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Get:1 http://us-central1.gce.archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+Get:2 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+Get:3 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+Hit:4 https://packages.cloud.google.com/apt google-cloud-ops-agent-noble-all InRelease
+Get:5 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/main amd64 Packages [1401 kB]
+Get:6 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+Get:7 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/main Translation-en [513 kB]
+Get:8 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/main amd64 Components [464 kB]
+Get:9 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/main amd64 c-n-f Metadata [30.5 kB]
+Get:10 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/universe amd64 Packages [15.0 MB]
+Get:11 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/universe Translation-en [5982 kB]
+Get:12 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/universe amd64 Components [3871 kB]
+Get:13 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/universe amd64 c-n-f Metadata [301 kB]
+Get:14 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [93.9 kB]
+Get:15 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/restricted Translation-en [18.7 kB]
+Get:16 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/restricted amd64 c-n-f Metadata [416 B]
+Get:17 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [269 kB]
+Get:18 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/multiverse Translation-en [118 kB]
+Get:19 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/multiverse amd64 Components [35.0 kB]
+Get:20 http://us-central1.gce.archive.ubuntu.com/ubuntu noble/multiverse amd64 c-n-f Metadata [8328 B]
+Get:21 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1408 kB]
+Get:22 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [311 kB]
+Get:23 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/main amd64 Components [181 kB]
+Get:24 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [1153 kB]
+Get:25 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/main amd64 c-n-f Metadata [17.7 kB]
+Get:26 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1707 kB]
+Get:27 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [343 kB]
+Get:28 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Components [387 kB]
+Get:29 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/universe amd64 c-n-f Metadata [34.9 kB]
+Get:30 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1813 kB]
+Get:31 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [412 kB]
+Get:32 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Components [212 B]
+Get:33 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 c-n-f Metadata [456 B]
+Get:34 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [50.7 kB]
+Get:35 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/multiverse Translation-en [14.3 kB]
+Get:36 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Components [940 B]
+Get:37 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 c-n-f Metadata [656 B]
+Get:38 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [40.6 kB]
+Get:39 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/main Translation-en [9172 B]
+Get:40 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/main amd64 Components [5740 B]
+Get:41 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/main amd64 c-n-f Metadata [368 B]
+Get:42 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [31.0 kB]
+Get:43 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/universe Translation-en [18.6 kB]
+Get:44 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Components [12.6 kB]
+Get:45 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/universe amd64 c-n-f Metadata [1588 B]
+Get:46 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/restricted amd64 Components [212 B]
+Get:47 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/restricted amd64 c-n-f Metadata [116 B]
+Get:48 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [748 B]
+Get:49 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/multiverse Translation-en [340 B]
+Get:50 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Components [212 B]
+Get:51 http://us-central1.gce.archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 c-n-f Metadata [116 B]
+Get:52 http://security.ubuntu.com/ubuntu noble-security/main Translation-en [232 kB]
+Get:53 http://security.ubuntu.com/ubuntu noble-security/main amd64 Components [46.4 kB]
+Get:54 http://security.ubuntu.com/ubuntu noble-security/main amd64 c-n-f Metadata [11.9 kB]
+Get:55 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1224 kB]
+Get:56 http://security.ubuntu.com/ubuntu noble-security/universe Translation-en [246 kB]
+Get:57 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Components [76.3 kB]
+Get:58 http://security.ubuntu.com/ubuntu noble-security/universe amd64 c-n-f Metadata [24.2 kB]
+Get:59 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1721 kB]
+Get:60 http://security.ubuntu.com/ubuntu noble-security/restricted Translation-en [394 kB]
+Get:61 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Components [212 B]
+Get:62 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 c-n-f Metadata [444 B]
+Get:63 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [45.4 kB]
+Get:64 http://security.ubuntu.com/ubuntu noble-security/multiverse Translation-en [12.4 kB]
+Get:65 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Components [208 B]
+Get:66 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 c-n-f Metadata [468 B]
+WARNING:root:cannot read /var/lib/command-not-found/commands.db.metadata: Expecting value: line 1 column 1 (char 0)
+Fetched 40.8 MB in 3s (12.3 MB/s)
+Reading package lists...
+W: https://packages.cloud.google.com/apt/dists/google-cloud-ops-agent-noble-all/InRelease: Key is stored in legacy trusted.gpg keyring (/etc/apt/trusted.gpg), see the DEPRECATION section in apt-key(8) for details.
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following NEW packages will be installed:
+  google-cloud-ops-agent
+0 upgraded, 1 newly installed, 0 to remove and 1 not upgraded.
+Need to get 117 MB of archives.
+After this operation, 539 MB of additional disk space will be used.
+Get:1 https://packages.cloud.google.com/apt google-cloud-ops-agent-noble-all/main amd64 google-cloud-ops-agent amd64 2.73.0~ubuntu24.04 [117 MB]
+dpkg-preconfigure: unable to re-open stdin: No such file or directory
+Fetched 117 MB in 1s (150 MB/s)
+Selecting previously unselected package google-cloud-ops-agent.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 80308 files and directories currently installed.)
+Preparing to unpack .../google-cloud-ops-agent_2.73.0~ubuntu24.04_amd64.deb ...
+Unpacking google-cloud-ops-agent (2.73.0~ubuntu24.04) ...
+Setting up google-cloud-ops-agent (2.73.0~ubuntu24.04) ...
+Created symlink /etc/systemd/system/multi-user.target.wants/google-cloud-ops-agent.service → /usr/lib/systemd/system/google-cloud-ops-agent.service.
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+google-cloud-ops-agent  installation succeeded.
+Copying gs://cpriti-thickthin-poc-use1/poc/poc_uds5.tgz to file:///tmp/poc_uds5.tgz
+  
+...
+
+Average throughput: 180.5MiB/s
+=== Verifying Cloud Monitoring emission for instance_id=3697964452583574513 ===
+  [attempt 1/24] cpu_series=1 mem_series=5
+=== Verified BOTH compute.googleapis.com/instance/cpu/utilization AND agent.googleapis.com/memory/percent_used are actively emitted! ===
+=== STAGE: seed-objects 2026-11-03T10:28:18Z ===
+=== 0. Seed 200MiB & 100MiB Rapid objects + 100 list objects ===
+created rapid/200MiB
+created rapid/100MiB
+seeded 100 small objects under rapid/list/ for list-objects-100
+=== STAGE: w1236-rapid-and-list 2026-11-03T10:28:35Z ===
+=== 1. Workloads 1-3 (Open, Read50x2x4, Random8K) & Workload 6 (List 100 objects & buckets) ===
+backend=go-grpc-mrd bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-grpc-mrd    open                     183.028ms  221.85ms  221.85ms 254.193ms 198.739ms        0.0       0.00     25.56    0.1%        86
+go-grpc-mrd    read50x2x4/serial        4.305484s 4.366333s 4.366333s 5.175784s 4.397471s       22.6       3.34    325.69    0.0%       188
+go-grpc-mrd    read50x2x4/concurrent    3.502214s 3.735128s 3.735128s 3.816416s   3.4757s       28.6       3.29    321.09    0.0%       289
+go-grpc-mrd    random8k                  31.252ms  31.914ms  52.508ms  83.089ms  31.838ms        0.2      19.81      0.15    0.0%       290
+go-grpc-mrd    list-objects-100          219.23ms 231.108ms 231.108ms 235.225ms 209.776ms        0.0       0.00      0.72    0.0%       291
+go-grpc-mrd    list-buckets-100         935.922ms 987.833ms 987.833ms 996.931ms  950.48ms        0.0       0.00      3.88    0.0%       305
+backend=go-json-range bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-json-range  open                     107.675ms 166.962ms 166.962ms 169.009ms 118.595ms        0.0       0.00      3.02    0.0%        40
+go-json-range  read50x2x4/serial        7.372231s 12.413618s 12.413618s 15.911308s 9.131755s       10.9       3.52    343.63    0.0%       157
+go-json-range  read50x2x4/concurrent    359.137ms 373.618ms 373.618ms 490.746ms 373.756ms      263.8       2.85    277.90    0.4%       254
+go-json-range  random8k                  57.119ms  66.509ms  83.812ms 197.763ms    57.8ms        0.1      32.45      0.25    0.0%       255
+go-json-range  list-objects-100          95.941ms 115.772ms 115.772ms 118.028ms  97.954ms        0.0       0.00      4.82    0.0%       245
+go-json-range  list-buckets-100         948.497ms 968.537ms 968.537ms  990.59ms 913.039ms        0.0       0.00      5.58    0.0%       218
+gcs-core-server pid=5741 listening on /tmp/rapid.sock
+client init: 37.287178ms (sidecar pid 5741, conns 32)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-uds-grpc    open                     187.815ms 243.404ms 243.404ms 259.574ms 208.133ms        0.0       0.00     15.34    0.0%        83
+go-uds-grpc    read50x2x4/serial        5.028005s 5.205044s 5.205044s  5.37301s 4.963285s       20.1       2.43    237.00    0.0%       204
+go-uds-grpc    read50x2x4/concurrent    3.379323s 3.427058s 3.427058s 3.433479s 3.381674s       29.4       2.65    259.13    0.0%       377
+go-uds-grpc    random8k                  32.246ms  39.801ms  42.587ms  44.315ms  35.488ms        0.2      44.25      0.34    0.0%       389
+go-uds-grpc    list-objects-100         114.182ms 154.119ms 154.119ms 185.073ms 116.173ms        0.0       0.00      0.80    0.0%       390
+go-uds-grpc    list-buckets-100         942.161ms  970.05ms  970.05ms 972.115ms 937.423ms        0.0       0.00      2.15    0.0%       398
+gcs-core-server pid=6214 listening on /tmp/rapidj.sock
+client init: 35.253633ms (sidecar pid 6214, conns 32)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-uds-grpc    open                     207.071ms 230.972ms 230.972ms 238.312ms 207.502ms        0.0       0.00     15.22    0.0%        77
+go-uds-grpc    read50x2x4/serial        3.893229s 3.935355s 3.935355s 4.229126s 3.920916s       25.4       2.53    247.47    0.0%       209
+go-uds-grpc    read50x2x4/concurrent    3.340484s 3.406785s 3.406785s 3.443432s 3.340641s       29.8       2.69    263.16    0.0%       385
+go-uds-grpc    random8k                  31.295ms  31.948ms  34.538ms  38.922ms   31.43ms        0.2      46.69      0.36    0.0%       396
+go-uds-grpc    list-objects-100         109.903ms 139.127ms 139.127ms  191.96ms 113.948ms        0.0       0.00      0.89    0.0%       398
+go-uds-grpc    list-buckets-100         937.814ms  957.01ms  957.01ms 957.978ms 937.751ms        0.0       0.00      2.42    0.0%       406
+backend=go-grpc-mrd bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-grpc-mrd    open                      177.97ms 222.038ms 222.038ms 224.388ms 194.492ms        0.0       0.00      4.60    0.0%        88
+go-grpc-mrd    read50x2x4/serial        3.827377s 3.910891s 3.910891s 4.146262s 3.872709s       25.7       3.52    343.93    0.0%       189
+go-grpc-mrd    read50x2x4/concurrent    3.371135s  3.40772s  3.40772s 3.452036s 3.375541s       29.4       2.99    292.09    0.0%       290
+go-grpc-mrd    random8k                  32.109ms  39.479ms  40.468ms  44.012ms  33.656ms        0.2      21.85      0.17    0.0%       291
+go-grpc-mrd    list-objects-100         191.023ms 217.047ms 217.047ms 222.659ms 198.561ms        0.0       0.00      0.83    0.0%       291
+go-grpc-mrd    list-buckets-100         962.449ms 987.274ms 987.274ms 992.082ms 965.766ms        0.0       0.00      4.02    0.0%       303
+backend=go-json-range bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-json-range  open                      70.912ms 172.936ms 172.936ms  248.13ms 116.651ms        0.0       0.00      2.77    0.0%        39
+go-json-range  read50x2x4/serial        7.198004s 11.742702s 11.742702s 16.054066s 8.908596s       11.2       3.40    331.99    0.0%       156
+go-json-range  read50x2x4/concurrent    328.788ms 346.985ms 346.985ms 369.385ms 333.459ms      294.1       3.52    343.52    0.5%       256
+go-json-range  random8k                  55.394ms  63.585ms  71.863ms 135.222ms   55.58ms        0.1      30.31      0.23    0.0%       257
+go-json-range  list-objects-100          96.506ms 110.071ms 110.071ms 112.594ms  94.819ms        0.0       0.00      1.23    0.0%       257
+go-json-range  list-buckets-100          923.84ms 961.298ms 961.298ms 962.577ms  931.63ms        0.0       0.00      4.47    0.0%       228
+gcs-core-server pid=6968 listening on /tmp/rapid.sock
+client init: 36.377818ms (sidecar pid 6968, conns 32)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-uds-grpc    open                     181.081ms 218.144ms 218.144ms  236.37ms 171.244ms        0.0       0.00     16.34    0.0%        74
+go-uds-grpc    read50x2x4/serial        4.021258s 4.092809s 4.092809s 4.330884s 4.062402s       24.5       2.57    251.32    0.0%       201
+go-uds-grpc    read50x2x4/concurrent    3.359061s 3.435277s 3.435277s 3.435702s 3.383125s       29.4       2.55    249.19    0.0%       308
+go-uds-grpc    random8k                  32.154ms  33.166ms  36.135ms  63.389ms   32.37ms        0.2      44.51      0.34    0.0%       319
+go-uds-grpc    list-objects-100         102.816ms 171.402ms 171.402ms 188.843ms 107.196ms        0.0       0.00      0.73    0.0%       321
+go-uds-grpc    list-buckets-100         933.973ms 980.957ms 980.957ms  995.84ms 945.154ms        0.0       0.00      2.18    0.0%       328
+gcs-core-server pid=7441 listening on /tmp/rapidj.sock
+client init: 38.909429ms (sidecar pid 7441, conns 32)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-uds-grpc    open                     183.752ms 222.583ms 222.583ms 237.924ms  182.62ms        0.0       0.00     15.11    0.0%        82
+go-uds-grpc    read50x2x4/serial        14.063885s 16.32264s 16.32264s 18.312065s 13.480081s        7.4       2.76    269.81    0.0%       210
+go-uds-grpc    read50x2x4/concurrent    3.339684s 3.435375s 3.435375s 3.439481s 3.378808s       29.4       2.69    262.63    0.0%       400
+go-uds-grpc    random8k                  39.935ms  40.428ms  43.907ms  50.625ms  40.099ms        0.2      48.51      0.37    0.0%       411
+go-uds-grpc    list-objects-100          78.046ms  190.33ms  190.33ms 197.206ms 109.907ms        0.0       0.00      0.84    0.0%       412
+go-uds-grpc    list-buckets-100         924.857ms 957.843ms 957.843ms 964.066ms 929.395ms        0.0       0.00      5.47    0.0%       422
+=== STAGE: w4-bidiread48-native 2026-11-03T10:53:17Z ===
+=== 2. Workload 4: Read 16 MiB chunks of 200 MiB via BidiRead on 48 threads for 5m ===
+backend=go-grpc-mrd bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-grpc-mrd    bidiread-16m-48t         535.693ms 637.261ms 804.882ms 908.005ms  544.44ms     1405.9       2.43     39.50    1.7%      1945
+go-grpc-mrd    bidiread-200m-48t        6.763303s 7.748889s 10.096536s 10.202114s 6.810847s     1405.9       2.43    480.00    1.7%      1945
+=== STAGE: w4-bidiread48-uds 2026-11-03T10:58:21Z ===
+gcs-core-server pid=8389 listening on /tmp/w4.sock
+client init: 35.996473ms (sidecar pid 8389, conns 32)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-uds-grpc    bidiread-16m-48t         536.792ms 667.257ms 765.552ms 999.418ms 553.603ms     1383.0       3.20     52.03    2.2%      2755
+go-uds-grpc    bidiread-200m-48t        6.763663s 8.346123s 9.261265s 10.277486s 6.922966s     1383.0       3.20    632.25    2.2%      2755
+=== STAGE: w5-bidiwrite48-native 2026-11-03T11:03:24Z ===
+=== 3. Workload 5: Write 200 MiB objects via BidiWrite/WriteObject on 48 threads for 5m ===
+backend=go-grpc-mrd bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-grpc-mrd    bidiwrite-200m-48t       1.526823s 1.905762s 2.277416s 19.095308s 1.543913s     6195.6       1.45    282.83    4.6%      2579
+=== STAGE: w5-bidiwrite48-uds 2026-11-03T11:08:29Z ===
+gcs-core-server pid=9356 listening on /tmp/w5.sock
+client init: 38.409792ms (sidecar pid 9356, conns 32)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 vcpus=192
+backend        sli                            p50       p90       p99       max      mean      MiB/s  cpu s/GiB cpu ms/op   cpu %  peak MiB
+go-uds-grpc    bidiwrite-200m-48t       6.061657s 6.998237s 7.623948s 13.079069s 6.187193s     1534.8       1.55    303.64    1.2%     16928
+=== STAGE: w1r3-and-shm 2026-11-03T11:13:38Z ===
+=== 4. W1R3 Sequential & Shm Comparison (with tuned HTTP/2 windows & 8 MiB UDS buffers) ===
+backend=go-json-h1 bucket=cpriti-thickthin-poc-use1 parallel=1 vcpus=192
+backend    style  op      size          p50       p90       p99       max      mean  p50 MiB/s  agg MiB/s   ffi/op cpu s/GiB   cpu %  peak MiB
+go-json-h1 whole  write   1MiB        311ms     336ms     336ms     414ms     317ms        3.2        3.5      0.0      6.18    0.0%        88
+go-json-h1 whole  read    1MiB        278ms     335ms     341ms     356ms     275ms        3.6        3.5      0.0      6.18    0.0%        88
+go-json-h1 whole  write   16MiB       739ms     880ms     880ms     896ms     768ms       21.6       30.8      0.0      1.86    0.0%       160
+go-json-h1 whole  read    16MiB       410ms     567ms     577ms     582ms     436ms       39.0       30.8      0.0      1.86    0.0%       160
+go-json-h1 whole  write   128MiB     4.404s    4.619s    4.619s    4.668s    4.387s       29.1       61.4      0.0      1.67    0.1%       476
+go-json-h1 whole  read    128MiB     1.252s    1.559s    1.566s    1.863s    1.319s      102.2       61.4      0.0      1.67    0.1%       476
+go-json-h1 32k    write   1MiB        304ms     324ms     324ms     337ms     293ms        3.3        4.6      0.0      5.69    0.0%       486
+go-json-h1 32k    read    1MiB        157ms     286ms     297ms     308ms     189ms        6.4        4.6      0.0      5.69    0.0%       486
+go-json-h1 32k    write   16MiB       593ms     731ms     731ms     765ms     635ms       27.0       40.0      0.0      1.86    0.0%       155
+go-json-h1 32k    read    16MiB       333ms     450ms     471ms     546ms     322ms       48.0       40.0      0.0      1.86    0.0%       155
+go-json-h1 32k    write   128MiB       3.9s    4.104s    4.104s    4.218s    3.951s       32.8       65.6      0.0      1.63    0.1%       350
+go-json-h1 32k    read    128MiB     1.278s    1.551s    1.631s    1.903s    1.284s      100.1       65.6      0.0      1.63    0.1%       350
+go-json-h1 -      list    -            60ms      61ms      61ms      66ms      59ms          -          -      0.0   0.33ms/call    0.0%    351  (objects=0)
+backend=go-grpc-cp bucket=cpriti-thickthin-poc-use1 parallel=1 vcpus=192
+backend    style  op      size          p50       p90       p99       max      mean  p50 MiB/s  agg MiB/s   ffi/op cpu s/GiB   cpu %  peak MiB
+go-grpc-cp whole  write   1MiB        345ms     414ms     414ms     423ms     335ms        2.9        3.1      0.0     21.90    0.0%       131
+go-grpc-cp whole  read    1MiB        308ms     384ms     395ms     524ms     325ms        3.2        3.1      0.0     21.90    0.0%       131
+go-grpc-cp whole  write   16MiB       525ms     619ms     619ms     626ms     552ms       30.5       21.5      0.0      2.88    0.0%       219
+go-grpc-cp whole  read    16MiB       798ms     873ms     883ms     972ms     808ms       20.1       21.5      0.0      2.88    0.0%       219
+go-grpc-cp whole  write   128MiB     1.557s    1.907s    1.907s    2.144s    1.648s       82.2       33.5      0.0      2.30    0.0%       558
+go-grpc-cp whole  read    128MiB     4.511s    4.945s    5.167s    5.261s     4.55s       28.4       33.5      0.0      2.30    0.0%       558
+go-grpc-cp 32k    write   1MiB        425ms     435ms     435ms     442ms     410ms        2.4        2.9      0.0      5.95    0.0%       552
+go-grpc-cp 32k    read    1MiB        307ms     381ms     382ms     393ms     321ms        3.3        2.9      0.0      5.95    0.0%       552
+go-grpc-cp 32k    write   16MiB       484ms     578ms     578ms     580ms     496ms       33.1       22.8      0.0      2.72    0.0%       631
+go-grpc-cp 32k    read    16MiB       790ms     880ms     961ms    1.056s     769ms       20.3       22.8      0.0      2.72    0.0%       631
+go-grpc-cp 32k    write   128MiB      1.79s    1.994s    1.994s    2.082s    1.811s       71.5       33.1      0.0      2.27    0.0%       443
+go-grpc-cp 32k    read    128MiB     4.504s    5.049s    5.562s    5.695s    4.553s       28.4       33.1      0.0      2.27    0.0%       443
+go-grpc-cp -      list    -           216ms     221ms     221ms     224ms     182ms          -          -      0.0   2.90ms/call    0.0%    443  (objects=0)
+gcs-core-server pid=10181 listening on /tmp/gcs-core-0/core.sock
+client init: 24.800835ms (sidecar spawn 8.60269ms, pid 10181, owned=true, how=, session=false)
+backend=go-uds-json bucket=cpriti-thickthin-poc-use1 parallel=1 vcpus=192
+backend    style  op      size          p50       p90       p99       max      mean  p50 MiB/s  agg MiB/s   ffi/op cpu s/GiB   cpu %  peak MiB
+go-uds-json whole  write   1MiB        297ms     400ms     400ms     402ms     323ms        3.4        3.5      3.0      5.46    0.0%        90
+go-uds-json whole  read    1MiB        279ms     315ms     343ms     350ms     270ms        3.6        3.5      1.0      5.46    0.0%        90
+go-uds-json whole  write   16MiB       820ms     935ms     935ms     965ms     832ms       19.5       29.8      6.0      2.28    0.0%       162
+go-uds-json whole  read    16MiB       430ms     579ms     658ms     713ms     439ms       37.2       29.8      1.0      2.28    0.0%       162
+go-uds-json whole  write   128MiB     4.231s    4.523s    4.523s    4.528s    4.261s       30.3       60.8     34.0      2.17    0.1%       740
+go-uds-json whole  read    128MiB      1.35s    1.622s    1.754s    1.891s    1.387s       94.8       60.8      1.0      2.17    0.1%       740
+go-uds-json 32k    write   1MiB        259ms     312ms     312ms     369ms     282ms        3.9        5.0      3.0      3.66    0.0%       669
+go-uds-json 32k    read    1MiB        156ms     260ms     281ms     307ms     171ms        6.4        5.0      1.0      3.66    0.0%       669
+go-uds-json 32k    write   16MiB       673ms     786ms     786ms     810ms     693ms       23.8       38.7      7.0      2.82    0.1%       762
+go-uds-json 32k    read    16MiB       304ms     449ms     457ms     611ms     320ms       52.7       38.7      1.0      2.82    0.1%       762
+go-uds-json 32k    write   128MiB      3.99s    4.119s    4.119s    4.178s    3.943s       32.1       65.3   3591.0      2.20    0.1%       993
+go-uds-json 32k    read    128MiB     1.284s    1.553s    1.622s    1.878s      1.3s       99.7       65.3      1.0      2.20    0.1%       993
+go-uds-json -      list    -            88ms     132ms     132ms     222ms     116ms          -          -      1.0   0.76ms/call    0.0%    950  (objects=0)
+sidecar: rss=309 MiB peak=309 MiB threads=194 | cpu split whole run: go=8.3s sidecar=17.8s
+gcs-core-server pid=10445 listening on /tmp/gcs-core-0/core.sock
+client init: 29.099201ms (sidecar spawn 8.784397ms, pid 10445, owned=true, how=, session=false)
+backend=go-uds-grpc bucket=cpriti-thickthin-poc-use1 parallel=1 vcpus=192
+backend    style  op      size          p50       p90       p99       max      mean  p50 MiB/s  agg MiB/s   ffi/op cpu s/GiB   cpu %  peak MiB
+go-uds-grpc whole  write   1MiB        509ms     594ms     594ms     625ms     516ms        2.0        2.8      3.0      9.81    0.0%       107
+go-uds-grpc whole  read    1MiB        302ms     348ms     377ms     440ms     299ms        3.3        2.8      1.0      9.81    0.0%       107
+go-uds-grpc whole  write   16MiB       994ms    1.022s    1.022s    1.082s     946ms       16.1       18.9      6.0      2.49    0.0%       174
+go-uds-grpc whole  read    16MiB       808ms     881ms     893ms     911ms     813ms       19.8       18.9      1.0      2.49    0.0%       174
+go-uds-grpc whole  write   128MiB     4.558s    4.769s    4.769s    4.806s    4.579s       28.1       28.6     34.0      2.29    0.0%       649
+go-uds-grpc whole  read    128MiB      4.45s    4.575s    5.189s    5.766s    4.448s       28.8       28.6      1.0      2.29    0.0%       649
+go-uds-grpc 32k    write   1MiB        405ms     484ms     484ms     494ms     415ms        2.5        3.0      3.0      4.91    0.0%       604
+go-uds-grpc 32k    read    1MiB        301ms     393ms     454ms     518ms     314ms        3.3        3.0      1.0      4.91    0.0%       604
+go-uds-grpc 32k    write   16MiB       710ms     856ms     856ms     911ms     767ms       22.5       21.6      7.0      3.13    0.0%       791
+go-uds-grpc 32k    read    16MiB       725ms     830ms     898ms     1.02s     733ms       22.1       21.6      1.0      3.13    0.0%       791
+go-uds-grpc 32k    write   128MiB     4.147s     4.49s     4.49s    4.581s    4.192s       30.9       29.5   3591.0      2.28    0.0%       861
+go-uds-grpc 32k    read    128MiB     4.375s    4.605s    4.821s    5.153s    4.389s       29.3       29.5      1.0      2.28    0.0%       861
+go-uds-grpc -      list    -           119ms     135ms     135ms     180ms     122ms          -          -      1.0   0.67ms/call    0.0%    808  (objects=0)
+sidecar: rss=287 MiB peak=287 MiB threads=194 | cpu split whole run: go=9.3s sidecar=18.3s
+gcs-core-server pid=10926 listening on /tmp/shm.sock
+client init: 31.280515ms (sidecar spawn 8.723115ms, pid 10926, owned=true, how=, session=false)
+grpc-chunks (copy into p)    p50=1.573s    min=1.235s       81.4 MiB/s  cpu 2.30 s/GiB (Go 0.61 + sidecar 1.70)
+shm (copy into p)            p50=1.572s    min=1.239s       81.4 MiB/s  cpu 1.27 s/GiB (Go 0.11 + sidecar 1.16)
+shm (zero-copy, lend slice)  p50=1.689s    min=1.219s       75.8 MiB/s  cpu 1.14 s/GiB (Go 0.00 + sidecar 1.14)
+gcs-core-server pid=11181 listening on /tmp/shm2.sock
+client init: 26.709491ms (sidecar spawn 8.298117ms, pid 11181, owned=true, how=, session=false)
+grpc-chunks (copy into p)    p50=4.63s     min=4.373s       27.6 MiB/s  cpu 2.39 s/GiB (Go 0.63 + sidecar 1.77)
+shm (copy into p)            p50=4.539s    min=4.486s       28.2 MiB/s  cpu 1.47 s/GiB (Go 0.12 + sidecar 1.36)
+shm (zero-copy, lend slice)  p50=4.486s    min=3.882s       28.5 MiB/s  cpu 1.33 s/GiB (Go 0.02 + sidecar 1.31)
+=== STAGE: export-gcm-metrics 2026-11-03T11:38:46Z ===
+=== 5. Exporting Cloud Monitoring Metrics (compute.googleapis.com/instance/cpu/utilization & agent.googleapis.com/memory/percent_used) ===

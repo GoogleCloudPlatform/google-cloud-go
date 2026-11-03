@@ -1,0 +1,17 @@
+client init: 24.800835ms (sidecar spawn 8.60269ms, pid 10181, owned=true, how=, session=false)
+backend=go-uds-json bucket=cpriti-thickthin-poc-use1 parallel=1 vcpus=192
+backend    style  op      size          p50       p90       p99       max      mean  p50 MiB/s  agg MiB/s   ffi/op cpu s/GiB   cpu %  peak MiB
+go-uds-json whole  write   1MiB        297ms     400ms     400ms     402ms     323ms        3.4        3.5      3.0      5.46    0.0%        90
+go-uds-json whole  read    1MiB        279ms     315ms     343ms     350ms     270ms        3.6        3.5      1.0      5.46    0.0%        90
+go-uds-json whole  write   16MiB       820ms     935ms     935ms     965ms     832ms       19.5       29.8      6.0      2.28    0.0%       162
+go-uds-json whole  read    16MiB       430ms     579ms     658ms     713ms     439ms       37.2       29.8      1.0      2.28    0.0%       162
+go-uds-json whole  write   128MiB     4.231s    4.523s    4.523s    4.528s    4.261s       30.3       60.8     34.0      2.17    0.1%       740
+go-uds-json whole  read    128MiB      1.35s    1.622s    1.754s    1.891s    1.387s       94.8       60.8      1.0      2.17    0.1%       740
+go-uds-json 32k    write   1MiB        259ms     312ms     312ms     369ms     282ms        3.9        5.0      3.0      3.66    0.0%       669
+go-uds-json 32k    read    1MiB        156ms     260ms     281ms     307ms     171ms        6.4        5.0      1.0      3.66    0.0%       669
+go-uds-json 32k    write   16MiB       673ms     786ms     786ms     810ms     693ms       23.8       38.7      7.0      2.82    0.1%       762
+go-uds-json 32k    read    16MiB       304ms     449ms     457ms     611ms     320ms       52.7       38.7      1.0      2.82    0.1%       762
+go-uds-json 32k    write   128MiB      3.99s    4.119s    4.119s    4.178s    3.943s       32.1       65.3   3591.0      2.20    0.1%       993
+go-uds-json 32k    read    128MiB     1.284s    1.553s    1.622s    1.878s      1.3s       99.7       65.3      1.0      2.20    0.1%       993
+go-uds-json -      list    -            88ms     132ms     132ms     222ms     116ms          -          -      1.0   0.76ms/call    0.0%    950  (objects=0)
+sidecar: rss=309 MiB peak=309 MiB threads=194 | cpu split whole run: go=8.3s sidecar=17.8s
