@@ -904,7 +904,7 @@ libraries:
     go:
       nested_module: logadmin
   - name: longrunning
-    version: 1.4.1
+    version: 1.5.0
     apis:
       - path: google/longrunning
         go:
