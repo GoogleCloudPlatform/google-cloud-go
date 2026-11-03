@@ -207,6 +207,13 @@ func (ps *PreparedStatement) Bind(values map[string]any) (*BoundStatement, error
 	}, nil
 }
 
+// Metadata returns the ResultRowMetadata describing the columns of the prepared query.
+func (ps *PreparedStatement) Metadata() *ResultRowMetadata {
+	ps.refreshMutex.Lock()
+	defer ps.refreshMutex.Unlock()
+	return ps.data.Metadata
+}
+
 func (ps *PreparedStatement) refreshIfInvalid(ctx context.Context) error {
 	/*
 	   | valid | validEarly | behaviour            |
