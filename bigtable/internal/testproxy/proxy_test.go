@@ -313,7 +313,7 @@ func TestBulkMutateRows_EntryErrorSetsTopLevelStatus(t *testing.T) {
 		t.Fatalf("testproxy test: BulkMutateRows returned error: %v", err)
 	}
 
-	if resp.Status.GetCode() == int32(codes.OK) {
+	if resp.GetStatus().GetCode() == int32(codes.OK) {
 		t.Errorf("testproxy test: BulkMutateRows() top-level status = OK; want non-OK when an entry fails")
 	}
 

@@ -742,7 +742,9 @@ func (s *goTestProxyServer) BulkMutateRows(ctx context.Context, req *pb.MutateRo
 					Status: st,
 				}
 				entries = append(entries, me)
-				res.Status = st
+				if res.Status.Code == int32(codes.OK) {
+					res.Status = st
+				}
 			}
 		}
 	}
