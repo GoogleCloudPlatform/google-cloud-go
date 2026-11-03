@@ -336,6 +336,9 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 		ctx, cancel := context.WithCancel(ctx) // for aborting the stream
 		defer cancel()
 
+		ongoingResultBatch.Reset()
+		valuesBuffer = nil
+
 		if isQueryExpiredViolation(prevError) {
 			// Query could have other expiry conditions apart from time based expiry.
 			// So, it is possible that the query does not get refreshed in `refreshIfInvalid`
@@ -369,6 +372,7 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 			AppProfileId:  bs.ps.c.appProfile,
 			PreparedQuery: candFinalizedStmt.preparedQuery,
 			Params:        bs.params,
+			ResumeToken:   resumeToken,
 		}
 		stream, err := bs.ps.c.client.ExecuteQuery(ctx, req)
 		if err != nil {
@@ -383,13 +387,8 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 		for {
 			proto.Reset(eqResp)
 			err := stream.RecvMsg(eqResp)
-			if err == io.EOF {
-				return handleExecuteStreamEnd(stream, trailerMD, valuesBuffer, err, &prevError)
-			}
 			if err != nil {
-				// Setup for next call
-				req.ResumeToken = resumeToken
-				return handleExecuteStreamEnd(stream, trailerMD, valuesBuffer, err, &prevError)
+				return handleExecuteStreamEnd(stream, trailerMD, &ongoingResultBatch, valuesBuffer, err, &prevError)
 			}
 
 			resp := eqResp.GetResponse()
@@ -455,7 +454,7 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 				// Save ResumeToken for subsequent requests
 				resumeToken = partialResultSet.GetResumeToken()
 
-				if finalizedStmt.metadata == nil || finalizedStmt.metadata.GetProtoSchema() == nil {
+				if finalizedStmt.metadata == nil || finalizedStmt.metadata.GetProtoSchema() == nil || finalizedStmt.Metadata == nil {
 					prevError = errors.New("bigtable: metadata missing")
 					return prevError
 				}
@@ -477,6 +476,7 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 					// Construct ResultRow
 					rr, err := newResultRow(completeRowValues, finalizedStmt.metadata, finalizedStmt.Metadata)
 					if err != nil {
+						prevError = err
 						return err
 					}
 					continueReading := f(*rr)
@@ -486,7 +486,7 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 						for {
 							proto.Reset(eqResp)
 							if err := stream.RecvMsg(eqResp); err != nil {
-								handleExecuteStreamEnd(stream, trailerMD, valuesBuffer, err, &prevError)
+								handleExecuteStreamEnd(stream, trailerMD, &ongoingResultBatch, valuesBuffer, err, &prevError)
 								// The stream has ended. We don't return an error
 								// because the caller has intentionally interrupted the scan.
 								return nil
@@ -503,15 +503,25 @@ func (bs *BoundStatement) execute(ctx context.Context, f func(ResultRow) bool) e
 	return nil
 }
 
-func handleExecuteStreamEnd(stream btpb.Bigtable_ExecuteQueryClient, trailerMD *metadata.MD, valuesBuffer []*btpb.Value, err error, prevError *error) error {
-	*prevError = err
+func handleExecuteStreamEnd(
+	stream btpb.Bigtable_ExecuteQueryClient,
+	trailerMD *metadata.MD,
+	ongoingResultBatch *bytes.Buffer,
+	valuesBuffer []*btpb.Value,
+	err error,
+	prevError *error,
+) error {
+	*trailerMD = stream.Trailer()
 	if err != nil && err != io.EOF {
+		*prevError = err
 		return err
 	}
-	*trailerMD = stream.Trailer()
-	if len(valuesBuffer) != 0 {
-		return errors.New("bigtable: server stream ended without sending a resume token")
+	if len(valuesBuffer) != 0 || ongoingResultBatch.Len() != 0 {
+		err = errors.New("bigtable: server stream ended without sending a resume token")
+		*prevError = err
+		return err
 	}
+	*prevError = nil
 	return nil
 }
 
