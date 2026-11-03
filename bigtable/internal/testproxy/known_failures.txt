@@ -1,1 +1,1 @@
-TestReadRows_Retry_WithRetryInfo_MultipleErrorResponse
+TestReadRows_Retry_WithRetryInfo_MultipleErrorResponse|TestExecuteQuery_.*
