@@ -718,3 +718,41 @@ func TestStruct_GetByName(t *testing.T) {
 		})
 	}
 }
+
+func TestResultRow_GetByIndex_StructWithUnnamedFields(t *testing.T) {
+	typeUnnamedStruct := &btpb.Type{
+		Kind: &btpb.Type_StructType{
+			StructType: &btpb.Type_Struct{
+				Fields: []*btpb.Type_Struct_Field{
+					{FieldName: "", Type: typeString},
+					{FieldName: "", Type: typeInt64},
+				},
+			},
+		},
+	}
+	pbMeta := createMetadata(colMeta("struct", typeUnnamedStruct))
+	pbValues := []*btpb.Value{
+		pbArray(pbString("foo"), pbInt64(100)),
+	}
+	rrMeta, err := newResultRowMetadata(pbMeta)
+	if err != nil {
+		t.Fatalf("newResultRowMetadata: %v", err)
+	}
+	row, err := newResultRow(pbValues, pbMeta, rrMeta)
+	if err != nil {
+		t.Fatalf("newResultRow: %v", err)
+	}
+
+	var got Struct
+	if err := row.GetByIndex(0, &got); err != nil {
+		t.Fatalf("GetByIndex(0) error: %v", err)
+	}
+	var f0 string
+	if err := got.GetByIndex(0, &f0); err != nil || f0 != "foo" {
+		t.Fatalf("Struct.GetByIndex(0) = %q, %v; want %q, nil", f0, err, "foo")
+	}
+	var f1 int64
+	if err := got.GetByIndex(1, &f1); err != nil || f1 != 100 {
+		t.Fatalf("Struct.GetByIndex(1) = %d, %v; want %d, nil", f1, err, 100)
+	}
+}
