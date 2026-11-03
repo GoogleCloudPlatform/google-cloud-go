@@ -2562,13 +2562,12 @@ func TestPreparedStatement_Metadata(t *testing.T) {
 		return nil
 	}
 
-	conn, err := grpc.Dial(testEnv.server.Addr,
+	conn, err := grpc.NewClient(testEnv.server.Addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 		grpc.WithUnaryInterceptor(unaryInterceptor),
 	)
 	if err != nil {
-		t.Fatalf("grpc.Dial failed: %v", err)
+		t.Fatalf("grpc.NewClient failed: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -2582,16 +2581,8 @@ func TestPreparedStatement_Metadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareStatement: %v", err)
 	}
-	md, err := ps.Metadata()
-	if err != nil {
-		t.Fatalf("ps.Metadata() error: %v", err)
-	}
+	md := ps.Metadata()
 	if md == nil || len(md.Columns) != 2 || md.Columns[0].Name != "_key" || md.Columns[1].Name != colFamAddress {
 		t.Fatalf("ps.Metadata() = %+v, want 2 columns (_key, %q)", md, colFamAddress)
-	}
-
-	var nilPS *PreparedStatement
-	if _, err := nilPS.Metadata(); err == nil {
-		t.Fatalf("nilPS.Metadata() succeeded, want error")
 	}
 }

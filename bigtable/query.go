@@ -208,16 +208,10 @@ func (ps *PreparedStatement) Bind(values map[string]any) (*BoundStatement, error
 }
 
 // Metadata returns the ResultRowMetadata describing the columns of the prepared query.
-func (ps *PreparedStatement) Metadata() (*ResultRowMetadata, error) {
-	if ps == nil {
-		return nil, errors.New("bigtable: nil prepared statement")
-	}
+func (ps *PreparedStatement) Metadata() *ResultRowMetadata {
 	ps.refreshMutex.Lock()
 	defer ps.refreshMutex.Unlock()
-	if ps.data == nil {
-		return nil, errors.New("bigtable: prepared statement has no metadata")
-	}
-	return ps.data.Metadata, nil
+	return ps.data.Metadata
 }
 
 func (ps *PreparedStatement) refreshIfInvalid(ctx context.Context) error {

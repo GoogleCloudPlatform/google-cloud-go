@@ -1405,13 +1405,9 @@ func (s *goTestProxyServer) ExecuteQuery(ctx context.Context, req *pb.ExecuteQue
 	}
 
 	if mdProto == nil {
-		if mp, ok := any(ps).(interface {
-			Metadata() (*bigtable.ResultRowMetadata, error)
-		}); ok {
-			if psMD, err := mp.Metadata(); err == nil && psMD != nil {
-				if converted, err := metadataToTestProxyProto(psMD); err == nil {
-					mdProto = converted
-				}
+		if psMD := ps.Metadata(); psMD != nil {
+			if converted, err := metadataToTestProxyProto(psMD); err == nil {
+				mdProto = converted
 			}
 		}
 	}
