@@ -51,7 +51,7 @@ trap cleanup EXIT
 # Run the conformance tests
 cd $conformanceTestsHome
 # known_failures.txt contains tests for the unimplemented features
-eval "go test -v -proxy_addr=:$testProxyPort -skip \"$(tr -d '\n' < $testProxyHome/known_failures.txt)\" | tee -a $sponge_log"
+eval "go test -v -proxy_addr=:$testProxyPort -skip `tr -d '\n' < $testProxyHome/known_failures.txt` | tee -a $sponge_log"
 RETURN_CODE=$?
 
 echo "exiting with ${RETURN_CODE}"
