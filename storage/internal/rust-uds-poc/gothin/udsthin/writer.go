@@ -44,12 +44,16 @@ func (w *Writer) open(knownSize int64) error {
 	if w.Append {
 		tr = GRPC
 	}
+	var ks *int64
+	if knownSize >= 0 {
+		ks = &knownSize
+	}
 	hdr := &pb.WriteRequest{Msg: &pb.WriteRequest_Header{Header: &pb.WriteHeader{
 		Bucket:            w.o.b.name,
 		Object:            w.o.object,
 		ContentType:       w.ContentType,
 		IfGenerationMatch: w.o.ifGenMatch(),
-		KnownSize:         knownSize,
+		KnownSize:         ks,
 		ChunkSize:         uint32(w.ChunkSize),
 		Transport:         tr,
 	}}}

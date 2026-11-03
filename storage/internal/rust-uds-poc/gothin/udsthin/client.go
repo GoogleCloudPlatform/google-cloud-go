@@ -210,17 +210,19 @@ func (o *ObjectHandle) If(conds storage.Conditions) *ObjectHandle {
 	return &o2
 }
 
-func (o *ObjectHandle) ifGenMatch() int64 {
+func (o *ObjectHandle) ifGenMatch() *int64 {
 	if o.conds == nil {
-		return -1
+		return nil
 	}
 	if o.conds.DoesNotExist {
-		return 0
+		var z int64
+		return &z
 	}
 	if o.conds.GenerationMatch != 0 {
-		return o.conds.GenerationMatch
+		g := o.conds.GenerationMatch
+		return &g
 	}
-	return -1
+	return nil
 }
 
 // mapErr reconstructs the cloud.google.com/go/storage error contract from the
