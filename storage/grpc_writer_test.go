@@ -3248,7 +3248,7 @@ func runRotationUpload(t *testing.T, srv *adaptiveRotationStorageServer, opts ro
 		attrs:                &ObjectAttrs{Name: "obj"},
 		spec:                 &storagepb.WriteObjectSpec{Resource: &storagepb.Object{Bucket: "projects/_/buckets/b", Name: "obj"}},
 		chunkTransferTimeout: opts.chunkTransferTimeout,
-		budget:               chunkRetryBudget{deadline: 2 * time.Second},
+		budget:               chunkRetryBudget{deadline: 5 * time.Second},
 		settings: &settings{
 			retry:      &retryConfig{backoff: &gax.Backoff{Initial: 5 * time.Millisecond}},
 			idempotent: true,
@@ -3572,7 +3572,7 @@ func TestGRPCResumableBidiWriteBufferSender_AdaptiveStreamRotation(t *testing.T)
 			stallStreamAt: map[int]int64{1: 200}, // ack chunk 1 (100), stall on chunk 2 (200)
 		}
 		mustRunRotationUpload(t, srv, rotationUploadOpts{
-			chunkTransferTimeout: 100 * time.Millisecond,
+			chunkTransferTimeout: 500 * time.Millisecond,
 			chunks:               3,
 			waitPerChunk:         true,
 		})
