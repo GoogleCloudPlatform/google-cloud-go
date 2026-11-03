@@ -2700,6 +2700,98 @@ func TestMRDAddSanityCheckEmulated(t *testing.T) {
 	})
 }
 
+// TestMRDAddDuringAndAfterFailureEmulated checks that Adds issued during and
+// after a permanent failure all receive a callback and do not race with
+// shutdown. Run with -race.
+func TestMRDAddDuringAndAfterFailureEmulated(t *testing.T) {
+	transportClientTest(skipHTTP("mrd is implemented for grpc client"), t, func(t *testing.T, ctx context.Context, project, bucket string, client storageClient) {
+		setBidiReads(t, client)
+		content := make([]byte, 5000)
+		rand.New(rand.NewSource(0)).Read(content)
+		// Populate test data.
+		_, err := client.CreateBucket(context.Background(), project, bucket, &BucketAttrs{
+			Name: bucket,
+		}, nil)
+		if err != nil {
+			t.Fatalf("client.CreateBucket: %v", err)
+		}
+		objectName := fmt.Sprintf("%d-object", time.Now().UnixNano())
+		w := veneerClient.Bucket(bucket).Object(objectName).NewWriter(context.Background())
+		if _, err := w.Write(content); err != nil {
+			t.Fatalf("failed to populate test data: %v", err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("closing object: %v", err)
+		}
+		params := &newMultiRangeDownloaderParams{
+			bucket: bucket,
+			object: objectName,
+			gen:    defaultGen,
+		}
+		reader, err := client.NewMultiRangeDownloader(context.Background(), params)
+		if err != nil {
+			t.Fatalf("NewMultiRangeDownloader: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var errs []error // Guarded by mu.
+		add := func(offset int64) {
+			wg.Add(1)
+			reader.Add(io.Discard, offset, 100, func(_, _ int64, cbErr error) {
+				mu.Lock()
+				errs = append(errs, cbErr)
+				mu.Unlock()
+				wg.Done()
+			})
+		}
+
+		// Offset > object size: OutOfRange fails the only stream (default
+		// minConnections=1), which fails the manager and cancels its context.
+		add(10000)
+		// Phase 1: keep adding until the manager has failed, so Adds race shutdown.
+		deadline := time.Now().Add(10 * time.Second)
+		for reader.Error() == nil && time.Now().Before(deadline) {
+			add(10)
+		}
+		if reader.Error() == nil {
+			t.Fatal("downloader did not enter permanent error state within 10s")
+		}
+		// Phase 2: Adds after failure take the fast-fail path and run their
+		// callbacks from this goroutine while cleanup() may still be waiting.
+		for i := 0; i < 1000; i++ {
+			add(10)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("not every Add callback fired within 30s")
+		}
+		reader.Wait()
+		if err := reader.Close(); status.Code(err) != codes.OutOfRange {
+			t.Errorf("Close: got %v, want OutOfRange", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		sawOutOfRange := false
+		for _, e := range errs {
+			if status.Code(e) == codes.OutOfRange {
+				sawOutOfRange = true
+				break
+			}
+		}
+		if !sawOutOfRange {
+			t.Errorf("expected at least one callback to report OutOfRange, got %d callbacks", len(errs))
+		}
+	})
+}
+
 func TestMultiRangeDownloaderSpecifyGenerationEmulated(t *testing.T) {
 	transportClientTest(skipHTTP("mrd is implemented for grpc client"), t, func(t *testing.T, ctx context.Context, project, bucket string, client storageClient) {
 		setBidiReads(t, client)

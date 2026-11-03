@@ -387,7 +387,7 @@ type multiRangeDownloaderManager struct {
 	attrsReady         chan struct{}
 	attrsOnce          sync.Once
 	spanCtx            context.Context
-	callbackWg         sync.WaitGroup
+	callbacks          callbackTracker
 	streamCreating     bool
 	streamPicker       streamPickerStrategy
 	streamIDCounter    int
@@ -395,6 +395,9 @@ type multiRangeDownloaderManager struct {
 	unsentRequests     *requestQueue
 	addStreams         chan mrdCommand
 	atCapacityCount    int
+	// addMu prevents add() from enqueueing a command after cleanup() has
+	// drained cmds, which would lose the callback.
+	addMu sync.RWMutex
 }
 
 type rangeRequest struct {
@@ -413,6 +416,10 @@ type rangeRequest struct {
 
 // Methods implementing internalMultiRangeDownloader
 func (m *multiRangeDownloaderManager) add(output io.Writer, offset, length int64, callback func(int64, int64, error)) {
+	// Hold the read lock across the ctx check and the cmds send so that
+	// cleanup() cannot drain cmds in between.
+	m.addMu.RLock()
+	defer m.addMu.RUnlock()
 	if err := m.ctx.Err(); err != nil {
 		if pErr := m.getPermanentError(); pErr != nil {
 			err = pErr
@@ -438,8 +445,11 @@ func (m *multiRangeDownloaderManager) add(output io.Writer, offset, length int64
 }
 
 func (m *multiRangeDownloaderManager) close(err error) error {
+	// In every branch, wait for the event loop and then for in-flight
+	// callbacks, so that Close covers every Add that happened before it.
 	if m.ctx.Err() != nil {
 		m.wg.Wait()
+		m.callbacks.wait()
 		if pErr := m.getPermanentError(); pErr != nil {
 			return pErr
 		}
@@ -450,12 +460,14 @@ func (m *multiRangeDownloaderManager) close(err error) error {
 	case m.cmds <- cmd:
 		<-m.ctx.Done()
 		m.wg.Wait()
+		m.callbacks.wait()
 		if pErr := m.getPermanentError(); pErr != nil && !errors.Is(pErr, errClosed) {
 			return pErr
 		}
 		return nil
 	case <-m.ctx.Done():
 		m.wg.Wait()
+		m.callbacks.wait()
 		if m.getPermanentError() != nil {
 			return m.getPermanentError()
 		}
@@ -464,26 +476,23 @@ func (m *multiRangeDownloaderManager) close(err error) error {
 }
 
 func (m *multiRangeDownloaderManager) wait() {
-	if err := m.ctx.Err(); err != nil {
-		m.callbackWg.Wait()
-		return
-	}
-	doneC := make(chan struct{})
-	cmd := &mrdWaitCmd{doneC: doneC}
-	select {
-	case m.cmds <- cmd:
+	if m.ctx.Err() == nil {
+		doneC := make(chan struct{})
+		cmd := &mrdWaitCmd{doneC: doneC}
 		select {
-		case <-doneC:
-			m.callbackWg.Wait()
-			return
+		case m.cmds <- cmd:
+			select {
+			case <-doneC:
+			case <-m.ctx.Done():
+			}
 		case <-m.ctx.Done():
-			m.callbackWg.Wait()
-			return
 		}
-	case <-m.ctx.Done():
-		m.callbackWg.Wait()
-		return
 	}
+	if m.ctx.Err() != nil {
+		// Let cleanup finish draining cmds, which may still start callbacks.
+		m.wg.Wait()
+	}
+	m.callbacks.wait()
 }
 
 func (m *multiRangeDownloaderManager) getHandle() []byte {
@@ -531,9 +540,9 @@ func (m *multiRangeDownloaderManager) runCallback(origOffset, numBytes int64, er
 	if cb == nil {
 		return
 	}
-	m.callbackWg.Add(1)
+	m.callbacks.add()
 	go func() {
-		defer m.callbackWg.Done()
+		defer m.callbacks.done()
 		cb(origOffset, numBytes, err)
 	}()
 }
@@ -667,6 +676,9 @@ sessionDrainLoop:
 	// Stop any session that is still being opened and make new calls to Add,
 	// Wait and Close return immediately.
 	m.cancel()
+	// Keep add() out until the drain below is complete, so no command is
+	// enqueued after it and left without a callback.
+	m.addMu.Lock()
 	// Complete any commands leftover in cmds channel.
 cmdDrainLoop:
 	for {
@@ -699,8 +711,10 @@ cmdDrainLoop:
 			break cmdDrainLoop
 		}
 	}
-	// Wait for all callbacks (including any initiated by the drained command) to finish.
-	m.callbackWg.Wait()
+	// Unlock before waiting: a callback may call Add, which takes the read lock.
+	m.addMu.Unlock()
+	// Wait for all callbacks (including any initiated by the drained commands) to finish.
+	m.callbacks.wait()
 }
 
 func (m *multiRangeDownloaderManager) addNewStream() {
@@ -1524,5 +1538,53 @@ func (q *requestQueue) Front() *rangeRequest {
 func (q *requestQueue) RemoveFront() {
 	if f := q.l.Front(); f != nil {
 		q.l.Remove(f)
+	}
+}
+
+// --- callbackTracker ---
+
+// callbackTracker counts in-flight user callbacks. Unlike sync.WaitGroup, add
+// may be called concurrently with wait, even when the count is zero. The zero
+// value is ready to use. See
+// https://github.com/googleapis/google-cloud-go/issues/20819.
+type callbackTracker struct {
+	mu   sync.Mutex
+	n    int
+	idle chan struct{} // Closed when n returns to zero; nil while n == 0.
+}
+
+// add records the start of one callback.
+func (t *callbackTracker) add() {
+	t.mu.Lock()
+	if t.n == 0 {
+		t.idle = make(chan struct{})
+	}
+	t.n++
+	t.mu.Unlock()
+}
+
+// done records the completion of one callback.
+func (t *callbackTracker) done() {
+	t.mu.Lock()
+	t.n--
+	if t.n < 0 {
+		t.mu.Unlock()
+		panic("storage: callbackTracker counter negative")
+	}
+	if t.n == 0 {
+		close(t.idle)
+		t.idle = nil
+	}
+	t.mu.Unlock()
+}
+
+// wait blocks until the number of in-flight callbacks next drops to zero.
+// Calling it from inside a callback deadlocks.
+func (t *callbackTracker) wait() {
+	t.mu.Lock()
+	ch := t.idle
+	t.mu.Unlock()
+	if ch != nil {
+		<-ch
 	}
 }
