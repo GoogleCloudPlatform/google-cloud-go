@@ -2394,6 +2394,21 @@ func TestSelectAll(t *testing.T) {
 		Address
 		BirthDate civil.Date
 	}
+	type Singer struct {
+		secret string
+		ID     int64  `spanner:"-"`
+		RealID int64  `spanner:"ID"`
+		Name   string
+		*Address
+	}
+	type BaseShadow struct {
+		ID   int64
+		Name int64
+	}
+	type DerivedShadow struct {
+		Name string
+		BaseShadow
+	}
 
 	tests := []struct {
 		name      string
@@ -2895,6 +2910,77 @@ func TestSelectAll(t *testing.T) {
 					BirthDate: civil.Date{Year: 2001, Month: 11, Day: 14},
 				},
 			},
+		},
+		{
+			name: "success: reversed column order, leading unexported field, tag precedence, ignore tag, and nil embedded pointer with WithLenient",
+			args: args{
+				destination: &[]*Singer{},
+				options:     []DecodeOptions{WithLenient()},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+							{Name: "AddressCity", Type: stringType()},
+						},
+						[]*proto3.Value{stringProto("alice"), intProto(1), stringProto("NYC")},
+					},
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+						},
+						[]*proto3.Value{stringProto("bob"), intProto(2)},
+					},
+					iterator.Done,
+				),
+			},
+			want: &[]*Singer{
+				{RealID: 1, Name: "alice"},
+				{RealID: 2, Name: "bob"},
+			},
+		},
+		{
+			name: "success: outer struct field dominates embedded struct field of same name",
+			args: args{
+				destination: &[]*DerivedShadow{},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+						},
+						[]*proto3.Value{stringProto("alice"), intProto(1)},
+					},
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+						},
+						[]*proto3.Value{stringProto("bob"), intProto(2)},
+					},
+					iterator.Done,
+				),
+			},
+			want: &[]*DerivedShadow{
+				{Name: "alice", BaseShadow: BaseShadow{ID: 1}},
+				{Name: "bob", BaseShadow: BaseShadow{ID: 2}},
+			},
+		},
+		{
+			name: "failure: nil column field metadata returns error instead of panicking",
+			args: args{
+				destination: &[]*Singer{},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{nil},
+						[]*proto3.Value{intProto(1)},
+					},
+					iterator.Done,
+				),
+			},
+			want:    &[]*Singer{},
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {
