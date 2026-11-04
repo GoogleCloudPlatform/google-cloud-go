@@ -125,6 +125,7 @@ fn random_id() -> Result<String, String> {
     let mut b = [0u8; 32];
     #[cfg(target_os = "linux")]
     {
+        // SAFETY: `b` is a valid mutable stack buffer of `b.len()` bytes.
         let rc = unsafe { libc::getrandom(b.as_mut_ptr() as *mut libc::c_void, b.len(), 0) };
         if rc != b.len() as isize {
             return Err(std::io::Error::last_os_error().to_string());
@@ -239,6 +240,7 @@ impl Sessions {
             if s.peer_pid <= 0 {
                 return true;
             }
+            // SAFETY: `kill(pid, 0)` with signal 0 performs an existence check without sending a signal.
             let rc = unsafe { libc::kill(s.peer_pid, 0) };
             if rc == 0 {
                 return true;

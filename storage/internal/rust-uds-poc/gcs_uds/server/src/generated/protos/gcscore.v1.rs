@@ -46,9 +46,9 @@ pub struct ReadObjectRequest {
     /// 0 = latest generation
     #[prost(int64, tag = "5")]
     pub generation: i64,
-    /// -1 = unset
-    #[prost(int64, tag = "6")]
-    pub if_generation_match: i64,
+    /// Unset or < 0 = no precondition; 0 = DoesNotExist
+    #[prost(int64, optional, tag = "6")]
+    pub if_generation_match: ::core::option::Option<i64>,
     #[prost(enumeration = "Transport", tag = "7")]
     pub transport: i32,
     /// Target bytes per ReadChunk; 0 = server default
@@ -139,12 +139,12 @@ pub struct WriteHeader {
     pub object: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub content_type: ::prost::alloc::string::String,
-    /// -1 = unset; 0 = DoesNotExist
-    #[prost(int64, tag = "4")]
-    pub if_generation_match: i64,
+    /// Unset or < 0 = no precondition; 0 = DoesNotExist
+    #[prost(int64, optional, tag = "4")]
+    pub if_generation_match: ::core::option::Option<i64>,
     /// >= 0 enables single-shot upload on JSON path
-    #[prost(int64, tag = "5")]
-    pub known_size: i64,
+    #[prost(int64, optional, tag = "5")]
+    pub known_size: ::core::option::Option<i64>,
     /// Resumable upload flush size; 0 = default
     #[prost(uint32, tag = "6")]
     pub chunk_size: u32,
@@ -177,6 +177,8 @@ pub struct WriteObjectResponse {
     pub generation: i64,
     #[prost(uint32, tag = "3")]
     pub crc32c: u32,
+    #[prost(enumeration = "Transport", tag = "4")]
+    pub transport_used: i32,
 }
 #[allow(clippy::all)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

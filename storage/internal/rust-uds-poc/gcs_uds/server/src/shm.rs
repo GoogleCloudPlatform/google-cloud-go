@@ -44,7 +44,11 @@ pub struct Region {
     _fd: OwnedFd,
 }
 
+// SAFETY: `Region` owns a kernel-sealed `memfd` mapping (`base..base+size`) that remains valid
+// for the lifetime of `Region` until `Drop` calls `munmap`. Concurrent writes are serialized via
+// `RegionWriteGuard` (`in_flight` atomic lock) and separated from reads by Acquire/Release fences.
 unsafe impl Send for Region {}
+// SAFETY: Shared references to `Region` synchronize concurrent access via `in_flight` (`Acquire`/`Release`).
 unsafe impl Sync for Region {}
 
 /// RAII guard ensuring at most one concurrent writer operates on a `Region` at a time.
@@ -89,6 +93,9 @@ impl Region {
                 self.size
             ));
         }
+        // SAFETY: `offset + data.len() <= self.size` is verified above, `self.base` points to a
+        // valid `MAP_SHARED` mapping of `self.size` bytes, and `data` is a separate heap/stack slice
+        // that does not overlap with the `memfd` region.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), self.base.add(offset), data.len());
         }
@@ -106,6 +113,8 @@ impl Region {
         }
         fence(Ordering::Acquire);
         let mut out = vec![0u8; len];
+        // SAFETY: `offset + len <= self.size` is verified above, `self.base` points to a valid
+        // `MAP_SHARED` mapping of `self.size` bytes, and `out` is a freshly allocated `Vec<u8>`.
         unsafe {
             std::ptr::copy_nonoverlapping(self.base.add(offset), out.as_mut_ptr(), len);
         }
@@ -115,6 +124,8 @@ impl Region {
 
 impl Drop for Region {
     fn drop(&mut self) {
+        // SAFETY: `self.base` and `self.size` were returned by a successful `libc::mmap` in
+        // `Registry::create` and are unmapped exactly once when `Region` is dropped.
         unsafe {
             libc::munmap(self.base as *mut libc::c_void, self.size);
         }
@@ -162,16 +173,20 @@ impl Registry {
             ));
         }
         let name = std::ffi::CString::new("gcs-core-shm").unwrap();
+        // SAFETY: `name.as_ptr()` is a valid NUL-terminated C string.
         let fd = unsafe {
             libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
         };
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: `fd` is a newly created valid file descriptor returned by `memfd_create`.
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: `fd` is a valid open `memfd` and `size <= isize::MAX`.
         if unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) } != 0 {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: `fd` is a valid `memfd` truncated to `size` bytes; kernel chooses the mapping address.
         let base = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -185,6 +200,7 @@ impl Registry {
         if base == libc::MAP_FAILED {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: `fd` is a valid `memfd` created with `MFD_ALLOW_SEALING`.
         if unsafe {
             libc::fcntl(
                 fd.as_raw_fd(),
@@ -194,6 +210,7 @@ impl Registry {
         } < 0
         {
             let err = std::io::Error::last_os_error();
+            // SAFETY: `base` and `size` came from the successful `mmap` above.
             unsafe {
                 libc::munmap(base, size);
             }
@@ -252,6 +269,7 @@ impl Registry {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
+        // SAFETY: `getuid()` is always safe to call and cannot fail.
         let my_uid = unsafe { libc::getuid() };
         loop {
             let (stream, _) = listener.accept().await?;
@@ -305,13 +323,15 @@ impl Registry {
 }
 
 fn send_fd(sock: i32, fd: i32, payload: &[u8]) -> std::io::Result<()> {
+    // SAFETY: `iov` references `payload` for the duration of `sendmsg`; `buf` is `u64`-aligned
+    // and sized via `CMSG_SPACE` to hold one `i32` file descriptor in `SCM_RIGHTS`.
     unsafe {
         let mut iov = libc::iovec {
             iov_base: payload.as_ptr() as *mut libc::c_void,
             iov_len: payload.len(),
         };
         let space = libc::CMSG_SPACE(std::mem::size_of::<i32>() as u32) as usize;
-        let mut buf = vec![0u8; space];
+        let mut buf = vec![0u64; space.div_ceil(std::mem::size_of::<u64>())];
         let mut msg: libc::msghdr = std::mem::zeroed();
         msg.msg_iov = &mut iov;
         msg.msg_iovlen = 1;

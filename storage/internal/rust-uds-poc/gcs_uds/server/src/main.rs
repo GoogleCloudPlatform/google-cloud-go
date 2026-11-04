@@ -27,9 +27,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(target_os = "linux")]
     if args.pdeathsig {
         // Optional 1:1 child mode: request SIGTERM from the kernel if the spawning parent dies.
+        // SAFETY: `prctl(PR_SET_PDEATHSIG, SIGTERM)` is a standard Linux syscall taking integer arguments.
         unsafe {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
         }
+        // SAFETY: `getppid()` is always safe to call and cannot fail.
         if unsafe { libc::getppid() } == 1 {
             eprintln!("parent already exited; not starting");
             std::process::exit(0);

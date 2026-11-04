@@ -333,6 +333,7 @@ pub async fn serve_with_listener(
     let svc = service::GcsCoreService::new(&args, shared.clone(), shm).await?;
     let reaper_sessions = svc.sessions();
     let reaper_handles = svc.handles();
+    // SAFETY: `getuid()` is always safe to call and cannot fail.
     let my_uid = unsafe { libc::getuid() };
     let peer_check = args.peer_uid_check;
 
@@ -350,7 +351,9 @@ pub async fn serve_with_listener(
                 ))),
                 None => Err(tonic::Status::permission_denied("no peer credentials")),
             },
-            None => Ok(req),
+            None => Err(tonic::Status::permission_denied(
+                "peer uid check requires UDS peer credentials; pass --peer-uid-check=false when using --tcp",
+            )),
         }
     };
 
@@ -405,6 +408,8 @@ pub async fn serve_with_listener(
             conn_shared.active_conns.fetch_add(1, Ordering::Relaxed);
             conn_shared.last_rpc.store(now_ms(), Ordering::Relaxed);
             #[cfg(unix)]
+            // SAFETY: `s.as_raw_fd()` is a valid open socket descriptor and `sz` is a properly
+            // sized `c_int` buffer for `SO_SNDBUF` / `SO_RCVBUF`.
             unsafe {
                 use std::os::unix::io::AsRawFd;
                 let fd = s.as_raw_fd();
@@ -465,6 +470,15 @@ pub async fn serve_with_listener(
     Ok(())
 }
 
+struct InprocHandle {
+    shared: Arc<Shared>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+static INPROC_SERVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, InprocHandle>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// C-FFI entry point for launching the gRPC-over-UDS server **in-process** on a background
 /// Tokio runtime thread. Returns `0` once the UDS listener is bound and ready to accept connections,
 /// or `-1` on error.
@@ -477,12 +491,16 @@ pub unsafe extern "C" fn gcs_core_start_inproc(socket_path: *const c_char) -> i3
         if socket_path.is_null() {
             return -1;
         }
+        // SAFETY: The caller guarantees `socket_path` is a non-null, NUL-terminated C string.
         let sock = match unsafe { CStr::from_ptr(socket_path) }.to_str() {
             Ok(s) => s.to_owned(),
             Err(_) => return -1,
         };
+        let shared = Shared::new();
+        let srv_shared = shared.clone();
+        let srv_sock = sock.clone();
         let (tx, rx) = std::sync::mpsc::sync_channel::<i32>(1);
-        std::thread::spawn(move || {
+        let join = std::thread::spawn(move || {
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_name("gcs-core-inproc")
@@ -496,7 +514,7 @@ pub unsafe extern "C" fn gcs_core_start_inproc(socket_path: *const c_char) -> i3
             };
             rt.block_on(async move {
                 let args = Args {
-                    socket: sock,
+                    socket: srv_sock,
                     idle_secs: 0,
                     ..Default::default()
                 };
@@ -508,10 +526,52 @@ pub unsafe extern "C" fn gcs_core_start_inproc(socket_path: *const c_char) -> i3
                     }
                 };
                 let _ = tx.send(0);
-                let _ = serve_with_listener(args, listener, Shared::new()).await;
+                let _ = serve_with_listener(args, listener, srv_shared).await;
             });
         });
-        rx.recv().unwrap_or(-1)
+        let rc = rx.recv().unwrap_or(-1);
+        if rc == 0 {
+            INPROC_SERVERS.lock().unwrap().insert(
+                sock,
+                InprocHandle {
+                    shared,
+                    join: Some(join),
+                },
+            );
+        }
+        rc
+    })
+    .unwrap_or(-1)
+}
+
+/// C-FFI entry point for stopping an in-process gRPC-over-UDS server previously started via
+/// [`gcs_core_start_inproc`] and waiting for its background Tokio runtime thread to exit.
+/// Returns `0` on clean shutdown or `-1` if no in-process server was registered for `socket_path`.
+///
+/// # Safety
+/// `socket_path` must be a valid, non-null, NUL-terminated C string pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gcs_core_stop_inproc(socket_path: *const c_char) -> i32 {
+    std::panic::catch_unwind(|| {
+        if socket_path.is_null() {
+            return -1;
+        }
+        // SAFETY: The caller guarantees `socket_path` is a non-null, NUL-terminated C string.
+        let sock = match unsafe { CStr::from_ptr(socket_path) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        let handle = INPROC_SERVERS.lock().unwrap().remove(sock);
+        match handle {
+            Some(mut h) => {
+                h.shared.trigger_shutdown();
+                if let Some(j) = h.join.take() {
+                    let _ = j.join();
+                }
+                0
+            }
+            None => -1,
+        }
     })
     .unwrap_or(-1)
 }

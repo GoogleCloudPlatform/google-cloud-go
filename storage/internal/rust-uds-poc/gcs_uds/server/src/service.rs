@@ -49,6 +49,7 @@ pub fn reap_dead_handles(handles: &RwLock<HashMap<u64, OpenHandle>>) -> usize {
         if h.pid <= 0 {
             return true;
         }
+        // SAFETY: `kill(pid, 0)` with signal 0 performs an existence check without sending a signal.
         let rc = unsafe { libc::kill(h.pid, 0) };
         if rc == 0 {
             return true;
@@ -172,25 +173,29 @@ fn to_status(e: google_cloud_storage::Error) -> Status {
     let msg = format!("{e}");
     if let Some(s) = e.status() {
         use google_cloud_gax::error::rpc::Code;
-        return match s.code {
-            Code::Cancelled => Status::cancelled(msg),
-            Code::Unknown => Status::unknown(msg),
-            Code::InvalidArgument => Status::invalid_argument(msg),
-            Code::DeadlineExceeded => Status::deadline_exceeded(msg),
-            Code::NotFound => Status::not_found(msg),
-            Code::AlreadyExists => Status::already_exists(msg),
-            Code::PermissionDenied => Status::permission_denied(msg),
-            Code::ResourceExhausted => Status::resource_exhausted(msg),
-            Code::FailedPrecondition => Status::failed_precondition(msg),
-            Code::Aborted => Status::aborted(msg),
-            Code::OutOfRange => Status::out_of_range(msg),
-            Code::Unimplemented => Status::unimplemented(msg),
-            Code::Internal => Status::internal(msg),
-            Code::Unavailable => Status::unavailable(msg),
-            Code::DataLoss => Status::data_loss(msg),
-            Code::Unauthenticated => Status::unauthenticated(msg),
-            _ => Status::unknown(msg),
-        };
+        // GCS JSON error envelopes (`{"error": {"code": 404, "message": "..."}}`) often omit a
+        // gRPC `status` string, causing `google-cloud-gax` to set `s.code = Code::Unknown` while
+        // populating `e.http_status_code()`. Fall through to `http_status_code()` when `s.code`
+        // is `Code::Unknown` so 404 (`NotFound`), 412 (`FailedPrecondition`), etc. are preserved.
+        match s.code {
+            Code::Cancelled => return Status::cancelled(msg),
+            Code::Unknown => {}
+            Code::InvalidArgument => return Status::invalid_argument(msg),
+            Code::DeadlineExceeded => return Status::deadline_exceeded(msg),
+            Code::NotFound => return Status::not_found(msg),
+            Code::AlreadyExists => return Status::already_exists(msg),
+            Code::PermissionDenied => return Status::permission_denied(msg),
+            Code::ResourceExhausted => return Status::resource_exhausted(msg),
+            Code::FailedPrecondition => return Status::failed_precondition(msg),
+            Code::Aborted => return Status::aborted(msg),
+            Code::OutOfRange => return Status::out_of_range(msg),
+            Code::Unimplemented => return Status::unimplemented(msg),
+            Code::Internal => return Status::internal(msg),
+            Code::Unavailable => return Status::unavailable(msg),
+            Code::DataLoss => return Status::data_loss(msg),
+            Code::Unauthenticated => return Status::unauthenticated(msg),
+            _ => return Status::unknown(msg),
+        }
     }
     match e.http_status_code() {
         Some(400) => return Status::invalid_argument(msg),
@@ -225,6 +230,9 @@ fn to_status(e: google_cloud_storage::Error) -> Status {
     }
     if dbg.contains("status_code: Some(412)") {
         return Status::failed_precondition(msg);
+    }
+    if e.status().is_some() {
+        return Status::unknown(msg);
     }
     Status::internal(msg)
 }
@@ -308,14 +316,14 @@ async fn pump_reader(
 }
 
 struct ChanSource {
-    rx: mpsc::Receiver<Bytes>,
+    rx: mpsc::Receiver<Result<Bytes, std::io::Error>>,
     exact: Option<u64>,
 }
 
 impl StreamingSource for ChanSource {
     type Error = std::io::Error;
     async fn next(&mut self) -> Option<Result<Bytes, Self::Error>> {
-        self.rx.recv().await.map(Ok)
+        self.rx.recv().await
     }
     async fn size_hint(&self) -> Result<SizeHint, Self::Error> {
         let mut h = SizeHint::new();
@@ -380,8 +388,8 @@ impl GcsCore for GcsCoreService {
             if r.generation > 0 {
                 open = open.set_generation(r.generation);
             }
-            if r.if_generation_match >= 0 {
-                open = open.set_if_generation_match(r.if_generation_match);
+            if let Some(g) = r.if_generation_match.filter(|&g| g >= 0) {
+                open = open.set_if_generation_match(g);
             }
             let (desc, mut resp) = open
                 .send_and_read(range.unwrap_or_else(|| ReadRange::offset(0)))
@@ -427,8 +435,8 @@ impl GcsCore for GcsCoreService {
             if r.generation > 0 {
                 rd = rd.set_generation(r.generation);
             }
-            if r.if_generation_match >= 0 {
-                rd = rd.set_if_generation_match(r.if_generation_match);
+            if let Some(g) = r.if_generation_match.filter(|&g| g >= 0) {
+                rd = rd.set_if_generation_match(g);
             }
             let mut resp = rd.send().await.map_err(to_status)?;
             let mut meta = Some(meta_from_highlights(&resp.object()));
@@ -484,8 +492,8 @@ impl GcsCore for GcsCoreService {
             if r.generation > 0 {
                 open = open.set_generation(r.generation);
             }
-            if r.if_generation_match >= 0 {
-                open = open.set_if_generation_match(r.if_generation_match);
+            if let Some(g) = r.if_generation_match.filter(|&g| g >= 0) {
+                open = open.set_if_generation_match(g);
             }
             let (desc, resp) = open
                 .send_and_read(range.unwrap_or_else(|| ReadRange::offset(0)))
@@ -501,8 +509,8 @@ impl GcsCore for GcsCoreService {
             if r.generation > 0 {
                 rd = rd.set_generation(r.generation);
             }
-            if r.if_generation_match >= 0 {
-                rd = rd.set_if_generation_match(r.if_generation_match);
+            if let Some(g) = r.if_generation_match.filter(|&g| g >= 0) {
+                rd = rd.set_if_generation_match(g);
             }
             let resp = rd.send().await.map_err(to_status)?;
             let meta = meta_from_highlights(&resp.object());
@@ -612,8 +620,8 @@ impl GcsCore for GcsCoreService {
             if !header.content_type.is_empty() {
                 open = open.set_content_type(header.content_type.clone());
             }
-            if header.if_generation_match >= 0 {
-                open = open.set_if_generation_match(header.if_generation_match);
+            if let Some(g) = header.if_generation_match.filter(|&g| g >= 0) {
+                open = open.set_if_generation_match(g);
             }
             match open.send().await {
                 Ok(mut w) => {
@@ -627,6 +635,7 @@ impl GcsCore for GcsCoreService {
                         size: obj.size,
                         generation: obj.generation,
                         crc32c: obj.checksums.as_ref().and_then(|c| c.crc32c).unwrap_or(0),
+                        transport_used: pb::Transport::Grpc as i32,
                     }));
                 }
                 Err(e) => {
@@ -640,31 +649,42 @@ impl GcsCore for GcsCoreService {
             }
         }
 
-        let (tx, rx) = mpsc::channel::<Bytes>(16);
-        let exact = if header.known_size >= 0 {
-            Some(header.known_size as u64)
-        } else {
-            None
-        };
+        let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+        let exact = header.known_size.filter(|&n| n >= 0).map(|n| n as u64);
         let mut wo =
             storage.write_object::<_, _, _, ChanSource>(bucket, object, ChanSource { rx, exact });
         if !header.content_type.is_empty() {
             wo = wo.set_content_type(header.content_type.clone());
         }
-        if header.if_generation_match >= 0 {
-            wo = wo.set_if_generation_match(header.if_generation_match);
+        if let Some(g) = header.if_generation_match.filter(|&g| g >= 0) {
+            wo = wo.set_if_generation_match(g);
         }
         if header.chunk_size > 0 {
             wo = wo.with_resumable_upload_buffer_size(header.chunk_size as usize);
         }
         let upload = tokio::spawn(async move { wo.send_buffered().await });
         let mut pump_err: Option<Status> = None;
-        while let Some(m) = inbound.message().await? {
-            if let Some(pb::write_request::Msg::Data(d)) = m.msg
-                && tx.send(d).await.is_err()
-            {
-                pump_err = Some(Status::aborted("upload aborted"));
-                break;
+        loop {
+            match inbound.message().await {
+                Ok(Some(m)) => {
+                    if let Some(pb::write_request::Msg::Data(d)) = m.msg
+                        && tx.send(Ok(d)).await.is_err()
+                    {
+                        pump_err = Some(Status::aborted("upload aborted"));
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(status) => {
+                    let _ = tx
+                        .send(Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            status.to_string(),
+                        )))
+                        .await;
+                    upload.abort();
+                    return Err(status);
+                }
             }
         }
         drop(tx);
@@ -679,6 +699,7 @@ impl GcsCore for GcsCoreService {
             size: obj.size,
             generation: obj.generation,
             crc32c: obj.checksums.as_ref().and_then(|c| c.crc32c).unwrap_or(0),
+            transport_used: pb::Transport::Json as i32,
         }))
     }
 
@@ -774,6 +795,8 @@ impl GcsCore for GcsCoreService {
         if req.into_inner().reset_peak_rss {
             let _ = std::fs::write("/proc/self/clear_refs", b"5");
         }
+        // SAFETY: `rusage` is a plain-old-data C struct and `getrusage(RUSAGE_SELF, &mut ru)`
+        // writes process resource statistics into `ru`.
         let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
         unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
         let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
