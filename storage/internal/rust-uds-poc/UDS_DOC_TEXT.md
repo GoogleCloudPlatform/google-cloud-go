@@ -1,6 +1,6 @@
 # Paste-ready text for the worklog tab "gRPC over UDS Approach" — Go column
 
-> **Source & Reproducibility:** [EVALUATION.md on branch `grpc-uds-go`](https://github.com/cpriti-os/google-cloud-go/blob/grpc-uds-go/storage/internal/rust-uds-poc/EVALUATION.md) | Rust sidecar PR: [`googleapis/google-cloud-rust#7350`](https://github.com/googleapis/google-cloud-rust/pull/7350) | Raw logs & Cloud Monitoring JSON: [`gothin/results/uds5-worklog/`](https://github.com/cpriti-os/google-cloud-go/tree/grpc-uds-go/storage/internal/rust-uds-poc/gothin/results/uds5-worklog)
+> **Source & Reproducibility:** [EVALUATION.md on branch `grpc-uds-go`](https://github.com/googleapis/google-cloud-go/blob/grpc-uds-go/storage/internal/rust-uds-poc/EVALUATION.md) | Rust sidecar PR: [`googleapis/google-cloud-rust#7350`](https://github.com/googleapis/google-cloud-rust/pull/7350) | Raw logs & Cloud Monitoring JSON: [`gothin/results/uds5-worklog/`](https://github.com/googleapis/google-cloud-go/tree/grpc-uds-go/storage/internal/rust-uds-poc/gothin/results/uds5-worklog)
 > - **Benchmark Configuration (per Worklog spec):** GCE `c4-standard-192` (`192 vCPUs`, `720 GiB RAM`, Ubuntu 24.04 LTS, `GVNIC` + `TIER_1` 200 Gbps networking) in `us-central1-b` (`instance_id=4800314160389265979`) targeting standard regional bucket `gs://cpriti-thickthin-poc-usw1` in `us-west1` (non-colocated CloudPath).
 > - **Metrics:** Latency (`P50`, `P90`, `P99`, `Max`, `Mean`) measured at outermost Go caller boundary; CPU and Peak RSS sum **Go process + Rust sidecar** (`getrusage` / `VmHWM` + sidecar `Stats`) alongside Cloud Monitoring VM telemetry (`compute.googleapis.com/instance/cpu/utilization` and `agent.googleapis.com/memory/percent_used`).
 
@@ -11,7 +11,7 @@
 **Go thin client (pure Go, `CGO_ENABLED=0`) → gRPC over UDS → Rust sidecar (`gcs-core-server`, `tonic` + `google-cloud-storage` 1.21, [PR #7350](https://github.com/googleapis/google-cloud-rust/pull/7350)).**
 - **Architecture:** Sidecar embedded via `//go:embed`, extracted to `~/.cache/gcs-core/<hash>/` (`memfd` fallback), one sidecar per user shared across Go processes (connection-refcounted `active_conns` + idle timeout).
 - **Auth & IPC:** Per-caller credential sessions (OAuth2 access tokens lent over UDS, bound to peer `uid+pid` via `SO_PEERCRED` with dead-PID reaping), tuned HTTP/2 flow control (`16 MiB` stream / `64 MiB` conn windows, `4 MiB` frames, `8 MiB` kernel `SO_SNDBUF`/`SO_RCVBUF`, zero-copy `RawCodec`), plus optional shared-memory data plane (`memfd` + `SCM_RIGHTS` + `mmap`).
-- **Links:** [Go Thin Client + Evaluation (`grpc-uds-go`)](https://github.com/cpriti-os/google-cloud-go/tree/grpc-uds-go/storage/internal/rust-uds-poc) | [Rust Sidecar (`google-cloud-rust#7350`)](https://github.com/googleapis/google-cloud-rust/pull/7350)
+- **Links:** [Go Thin Client + Evaluation (`grpc-uds-go`)](https://github.com/googleapis/google-cloud-go/tree/grpc-uds-go/storage/internal/rust-uds-poc) | [Rust Sidecar (`google-cloud-rust#7350`)](https://github.com/googleapis/google-cloud-rust/pull/7350)
 
 ---
 
