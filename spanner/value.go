@@ -4610,8 +4610,8 @@ func errDecodeStructField(ty *sppb.StructType, f string, err error) error {
 	return se
 }
 
-// errStructFieldsMismatchVals returns error for field count isn't equal to
-// value count in a Cloud Spanner STRUCT.
+// errStructFieldsMismatchVals returns an error for a mismatch between the number
+// of fields and values in a Cloud Spanner STRUCT.
 func errStructFieldsMismatchVals(ty *sppb.StructType, pb *proto3.ListValue) error {
 	return spannerErrorf(codes.FailedPrecondition,
 		"STRUCT has different number of fields(%v) and values(%v)", len(ty.Fields), len(pb.Values))
