@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 language: go
-version: v0.50.0
+version: v0.51.0
 repo: googleapis/google-cloud-go
 sources:
   discovery:
@@ -512,7 +512,7 @@ libraries:
   - name: compute
     version: 1.74.1
     preview:
-      version: 1.72.0-preview.1
+      version: 1.75.0-preview.1
       apis:
         - path: google/cloud/compute/v1
     apis:
@@ -904,7 +904,7 @@ libraries:
     go:
       nested_module: logadmin
   - name: longrunning
-    version: 1.4.1
+    version: 1.5.0
     apis:
       - path: google/longrunning
         go:
