@@ -4709,6 +4709,15 @@ func decodeStructArray(ty *sppb.StructType, pb *proto3.ListValue, ptr interface{
 	if pb == nil {
 		return errNilListValue("STRUCT")
 	}
+	if ty == nil {
+		for i, pv := range pb.Values {
+			if _, isNull := pv.Kind.(*proto3.Value_NullValue); isNull {
+				continue
+			}
+			return errDecodeArrayElement(i, pv, "STRUCT", errNilSpannerStructType())
+		}
+		return errNilSpannerStructType()
+	}
 	// Type of the struct pointers stored in the slice that ptr points to.
 	ts := reflect.TypeOf(ptr).Elem().Elem()
 	// The slice that ptr points to, might be nil at this point.
