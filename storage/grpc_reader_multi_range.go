@@ -191,6 +191,7 @@ func (c *grpcStorageClient) NewMultiRangeDownloader(ctx context.Context, params 
 	}
 	session, finalSpec, err := manager.createNewSession(initialStreamID, readSpec, true)
 	if err != nil {
+		cancel()
 		manager.setPermanentError(err)
 		return nil, err
 	}
@@ -752,13 +753,31 @@ func (m *multiRangeDownloaderManager) createNewSession(id int, readSpec *storage
 	var firstResult mrdSessionResult
 	var newSession *bidiReadStreamSession
 
-	err := run(m.ctx, func(ctx context.Context) error {
-		if newSession != nil {
-			newSession.Shutdown()
-			newSession = nil
+	openSession := func(ctx context.Context) (*bidiReadStreamSession, mrdSessionResult) {
+		if !waitForResult {
+			return m.openAndInitializeSession(ctx, id, readSpec, false)
 		}
+		var s *bidiReadStreamSession
+		var res mrdSessionResult
+		err := executeWithReadStallTimeout(ctx, m.client.readStallMgr, m.params.bucket, func(ctx context.Context) error {
+			s, res = m.openAndInitializeSession(ctx, id, readSpec, true)
+			return res.err
+		}, func(stallTimeout time.Duration) {
+			target := stripPort(metricsStateFromContext(ctx).getTarget())
+			m.client.metrics.recordStallDuration(ctx, stallTimeout, "ReadObject", "grpc", target)
+		})
+		if err != nil {
+			if res.decoder != nil {
+				res.decoder.databufs.Free()
+				res.decoder = nil
+			}
+			res.err = err
+		}
+		return s, res
+	}
 
-		session, result := m.openAndInitializeSession(ctx, id, readSpec, waitForResult)
+	openStream := func(ctx context.Context) error {
+		session, result := openSession(ctx)
 
 		if result.err != nil {
 			if session != nil {
@@ -771,7 +790,7 @@ func (m *multiRangeDownloaderManager) createNewSession(id int, readSpec *storage
 				// We might get a redirect error here for an out-of-region request.
 				// Add the routing token and read handle to the request and do one
 				// retry.
-				session, result = m.openAndInitializeSession(ctx, id, readSpec, waitForResult)
+				session, result = openSession(ctx)
 
 				if result.err != nil {
 					if session != nil {
@@ -789,6 +808,37 @@ func (m *multiRangeDownloaderManager) createNewSession(id int, readSpec *storage
 		newSession = session
 		firstResult = result
 		return nil
+	}
+
+	cleanupAttempt := func() {
+		if firstResult.decoder != nil {
+			firstResult.decoder.databufs.Free()
+			firstResult.decoder = nil
+		}
+		if newSession != nil {
+			newSession.Shutdown()
+			newSession = nil
+		}
+		if waitForResult {
+			for {
+				select {
+				case stale := <-m.sessionResps:
+					if stale.decoder != nil {
+						stale.decoder.databufs.Free()
+					}
+				default:
+					return
+				}
+			}
+		}
+	}
+
+	err := run(m.ctx, func(ctx context.Context) error {
+		attemptErr := openStream(ctx)
+		if attemptErr != nil {
+			cleanupAttempt()
+		}
+		return attemptErr
 	}, retry, true, withOperation("ReadObject"), withBucket(m.params.bucket), withObject(m.params.object))
 
 	if err != nil {
@@ -799,6 +849,7 @@ func (m *multiRangeDownloaderManager) createNewSession(id int, readSpec *storage
 		// Process the successful first result
 		m.processSessionResult(firstResult)
 		if pErr := m.getPermanentError(); pErr != nil {
+			newSession.Shutdown()
 			return nil, nil, pErr
 		}
 	}
@@ -806,7 +857,7 @@ func (m *multiRangeDownloaderManager) createNewSession(id int, readSpec *storage
 }
 
 func (m *multiRangeDownloaderManager) openAndInitializeSession(ctx context.Context, id int, spec *storagepb.BidiReadObjectSpec, waitForResult bool) (*bidiReadStreamSession, mrdSessionResult) {
-	session, err := newBidiReadStreamSession(ctx, id, m.sessionResps, m.client, m.settings, m.params, spec)
+	session, err := newBidiReadStreamSession(ctx, m.ctx, id, m.sessionResps, m.client, m.settings, m.params, spec)
 	if err != nil {
 		return nil, mrdSessionResult{err: err}
 	}
@@ -1262,13 +1313,13 @@ type bidiReadStreamSession struct {
 	manualShutdown bool
 }
 
-func newBidiReadStreamSession(ctx context.Context, id int, respC chan<- mrdSessionResult, client *grpcStorageClient, settings *settings, params *newMultiRangeDownloaderParams, readSpec *storagepb.BidiReadObjectSpec) (*bidiReadStreamSession, error) {
+func newBidiReadStreamSession(ctx, managerCtx context.Context, id int, respC chan<- mrdSessionResult, client *grpcStorageClient, settings *settings, params *newMultiRangeDownloaderParams, readSpec *storagepb.BidiReadObjectSpec) (*bidiReadStreamSession, error) {
 	sCtx, cancel := context.WithCancel(ctx)
 
 	s := &bidiReadStreamSession{
 		id:         id,
 		ctx:        sCtx,
-		managerCtx: ctx,
+		managerCtx: managerCtx,
 		cancel:     cancel,
 		client:     client,
 		settings:   settings,
