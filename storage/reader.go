@@ -28,6 +28,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
@@ -119,7 +120,12 @@ func (o *ObjectHandle) NewReader(ctx context.Context, opts ...ReaderOption) (*Re
 func (o *ObjectHandle) NewRangeReader(ctx context.Context, offset, length int64, opts ...ReaderOption) (r *Reader, err error) {
 	// This span covers the life of the reader. It is closed via the context
 	// in Reader.Close.
-	ctx, _ = startSpanWithBucket(ctx, o.c, o.bucket, "Object.Reader")
+	readMode := "range"
+	if offset == 0 && length < 0 {
+		readMode = "full"
+	}
+	ctx, _ = startSpanWithObject(ctx, o.c, o.bucket, o.object, "Object.Reader",
+		trace.WithAttributes(attribute.String("gcp.storage.read.mode", readMode)))
 	defer func() { endSpan(ctx, err) }()
 
 	if err := o.validate(); err != nil {
@@ -259,18 +265,14 @@ func WithDisableReaderChecksum() ReaderOption {
 // NewMultiRangeDownloader creates a multi-range reader for an object.
 // Must be called on a gRPC client created using [NewGRPCClient].
 //
-// This uses the gRPC-specific bi-directional read API, which is in private
-// preview; please contact your account manager if interested. The option
-// [experimental.WithGRPCBidiReads] or [experimental.WithZonalBucketAPIs]
-// must be selected in order to use this API.
-
-// NewMultiRangeDownloader creates a multi-range reader for an object.
-// Must be called on a gRPC client created using [NewGRPCClient].
+// This uses the gRPC-specific bi-directional read API. The option
+// [WithGRPCBidiReads] must be selected in order to use this API.
 func (o *ObjectHandle) NewMultiRangeDownloader(ctx context.Context, opts ...MRDOption) (mrd *MultiRangeDownloader, err error) {
 	// This span covers the life of the MRD. It is closed via the context
 	// in MultiRangeDownloader.Close.
 	var spanCtx context.Context
-	spanCtx, _ = startSpanWithBucket(ctx, o.c, o.bucket, "Object.MultiRangeDownloader")
+	spanCtx, _ = startSpanWithObject(ctx, o.c, o.bucket, o.object, "Object.MultiRangeDownloader",
+		trace.WithAttributes(attribute.String("gcp.storage.read.mode", "multi_range")))
 	defer func() {
 		if err != nil {
 			endSpan(spanCtx, err)
@@ -415,7 +417,7 @@ func (r *Reader) Close() error {
 	if r.metricsState != nil {
 		if r.metricsState.metrics != nil {
 			if total := atomic.SwapInt64(&r.bytesRead, 0); total > 0 {
-				r.metricsState.metrics.responseBodySize.Record(r.ctx, total, metric.WithAttributes(attribute.String("rpc.method", "ReadObject")))
+				r.metricsState.metrics.responseBodySize.Record(r.ctx, total, metric.WithAttributes(attribute.String("rpc.system.name", r.metricsState.getSystemName()), attribute.String("rpc.method", "ReadObject"), attribute.String("server.address", stripPort(r.metricsState.getTarget()))))
 			}
 		}
 		if r.metricsState.record != nil {
@@ -525,9 +527,7 @@ func (r *Reader) Metadata() map[string]string {
 // ReadHandle returns the read handle associated with an object.
 // ReadHandle will be periodically refreshed.
 //
-// ReadHandle requires the gRPC-specific bi-directional read API, which is in
-// private preview; please contact your account manager if interested.
-// Note that this only valid for gRPC and only with zonal buckets.
+// ReadHandle requires the gRPC-specific bi-directional read API.
 func (r *Reader) ReadHandle() ReadHandle {
 	if r.handle == nil {
 		r.handle = &ReadHandle{}
@@ -541,8 +541,6 @@ func (r *Reader) ReadHandle() ReadHandle {
 //
 // Typically, a MultiRangeDownloader opens a stream to which we can add
 // different ranges to read from the object.
-//
-// This API is currently in preview and is not yet available for general use.
 type MultiRangeDownloader struct {
 	// Attrs is populated when NewMultiRangeDownloader returns.
 	Attrs ReaderObjectAttrs
@@ -589,8 +587,15 @@ func (mrd *MultiRangeDownloader) Add(output io.Writer, offset, length int64, cal
 // it could lead to a deadlock.
 func (mrd *MultiRangeDownloader) Close() error {
 	err := mrd.impl.close(nil)
-	if state := metricsStateFromContext(mrd.impl.getSpanCtx()); state != nil && state.record != nil {
-		state.record(err)
+	if state := metricsStateFromContext(mrd.impl.getSpanCtx()); state != nil {
+		if state.metrics != nil {
+			if total := mrd.impl.getBytesRead(); total > 0 {
+				state.metrics.responseBodySize.Record(mrd.impl.getSpanCtx(), total, metric.WithAttributes(attribute.String("rpc.system.name", state.getSystemName()), attribute.String("rpc.method", "ReadObject"), attribute.String("server.address", stripPort(state.getTarget()))))
+			}
+		}
+		if state.record != nil {
+			state.record(err)
+		}
 	}
 	endSpan(mrd.impl.getSpanCtx(), err)
 	return err

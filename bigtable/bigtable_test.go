@@ -37,6 +37,7 @@ import (
 	"github.com/googleapis/gax-go/v2/apierror"
 	"google.golang.org/api/option"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	rpcpb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/genproto/googleapis/type/date"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -1750,13 +1751,14 @@ func TestExecuteQuery(t *testing.T) {
 	preparedQuery1 := "first mock prepared query"
 	preparedQuery2 := "second mock prepared query"
 	for _, tc := range []struct {
-		desc                  string
-		testTTL               time.Duration
-		mockPrepQueryResps    []prepareQueryResp
-		mockRecvMsgResps      []recvMsgResp
-		wantExecReqPrepQuerys [][]byte
-		wantResultRowValues   [][]*btpb.Value
-		wantExecErr           error
+		desc                    string
+		testTTL                 time.Duration
+		mockPrepQueryResps      []prepareQueryResp
+		mockRecvMsgResps        []recvMsgResp
+		wantExecReqPrepQuerys   [][]byte
+		wantExecReqResumeTokens [][]byte
+		wantResultRowValues     [][]*btpb.Value
+		wantExecErr             error
 	}{
 		{
 			/*
@@ -1903,6 +1905,10 @@ func TestExecuteQuery(t *testing.T) {
 				[]byte(preparedQuery1),
 				[]byte(preparedQuery1),
 			},
+			wantExecReqResumeTokens: [][]byte{
+				nil,
+				[]byte("resume-token"),
+			},
 			wantResultRowValues: [][]*btpb.Value{newProtoRowValuesWithKey(colFamAddress)},
 		},
 		{
@@ -1913,8 +1919,9 @@ func TestExecuteQuery(t *testing.T) {
 				4. RecvMsg - receives DeadlineExceeded error after query TTL has passed
 				5. PrepareQuery
 				6. ExecuteQuery
-				7. RecvMsg - gets resume token
-				8. RecvMsg - gets EOF
+				7. RecvMsg - gets a batch of data with reset true
+				8. RecvMsg - gets resume token
+				9. RecvMsg - gets EOF
 			*/
 			desc:    "retry on time-based expired query",
 			testTTL: 50 * time.Millisecond,
@@ -1928,6 +1935,7 @@ func TestExecuteQuery(t *testing.T) {
 					sleep: ptr(150 * time.Millisecond),
 					err:   status.Error(codes.DeadlineExceeded, "context deadline exceeded"), // retryable
 				},
+				newExecQueryRespFullBatch(true, nil /* sleep */, []string{colFamAddress}),
 				newExecQueryRespResumeToken(),
 				{err: io.EOF},
 			},
@@ -2024,6 +2032,44 @@ func TestExecuteQuery(t *testing.T) {
 				[]byte(preparedQuery1),
 			},
 		},
+		{
+			desc: "server stream ended with partial batch and no ResumeToken",
+			mockPrepQueryResps: []prepareQueryResp{
+				newPrepareQueryResp(preparedQuery1, colFamAddress, colFamInfo),
+			},
+			mockRecvMsgResps: []recvMsgResp{
+				newExecQueryRespPartialBatchFirstHalf(true /* reset */, nil /* sleep */, []string{colFamAddress}),
+				{err: io.EOF},
+			},
+			wantExecReqPrepQuerys: [][]byte{
+				[]byte(preparedQuery1),
+			},
+			wantExecErr: errors.New("bigtable: server stream ended without sending a resume token"),
+		},
+		{
+			desc: "retry discards uncommitted partial batch and valuesBuffer even when reset is false",
+			mockPrepQueryResps: []prepareQueryResp{
+				newPrepareQueryResp(preparedQuery1, colFamAddress, colFamInfo),
+			},
+			mockRecvMsgResps: []recvMsgResp{
+				newExecQueryRespFullBatch(true /* reset */, nil /* sleep */, []string{colFamAddress, colFamInfo}),
+				newExecQueryRespPartialBatchFirstHalf(false /* reset */, nil /* sleep */, []string{colFamAddress}),
+				{err: status.Error(codes.Unavailable, "mock unavailable error")},
+				newExecQueryRespPartialBatchFirstHalf(false /* reset */, nil /* sleep */, []string{colFamAddressNew}),
+				newExecQueryRespPartialBatchSecondHalf(false /* reset */, nil /* sleep */, []string{colFamAddressNew}, []string{colFamInfo}),
+				newExecQueryRespResumeToken(),
+				{err: io.EOF},
+			},
+			wantExecReqPrepQuerys: [][]byte{
+				[]byte(preparedQuery1),
+				[]byte(preparedQuery1),
+			},
+			wantExecReqResumeTokens: [][]byte{
+				nil,
+				nil,
+			},
+			wantResultRowValues: [][]*btpb.Value{newProtoRowValuesWithKey(colFamAddressNew, colFamInfo)},
+		},
 	} {
 		mockPrepQueryResps = tc.mockPrepQueryResps
 		mockRecvMsgResps = tc.mockRecvMsgResps
@@ -2054,6 +2100,10 @@ func TestExecuteQuery(t *testing.T) {
 			// Execute query
 			err = bs.Execute(ctx, func(rr ResultRow) bool {
 				vals := rr.pbValues
+				if rr.Metadata == nil || len(rr.Metadata.Columns) != len(vals) {
+					t.Errorf("#%d ResultRow.Metadata: got %+v, want %d columns", gotRowCount, rr.Metadata, len(vals))
+					return false
+				}
 
 				// Compare row values
 				if gotRowCount > len(tc.wantResultRowValues) ||
@@ -2087,6 +2137,14 @@ func TestExecuteQuery(t *testing.T) {
 					t.Fatalf("%v: PreparedQuery in ExecuteQuery request: got: %v, want: %v",
 						i,
 						string(gotSendMsgReqs[i].PreparedQuery), string(wantPrepQueryInExecReq))
+				}
+			}
+
+			for i, wantResumeToken := range tc.wantExecReqResumeTokens {
+				if string(gotSendMsgReqs[i].ResumeToken) != string(wantResumeToken) {
+					t.Fatalf("%v: ResumeToken in ExecuteQuery request: got: %q, want: %q",
+						i,
+						string(gotSendMsgReqs[i].ResumeToken), string(wantResumeToken))
 				}
 			}
 		})
@@ -2356,8 +2414,9 @@ func (w *wrappedClientStream) RecvMsg(m any) error {
 }
 
 func (w *wrappedClientStream) SendMsg(m any) error {
-	execReq, _ := m.(*btpb.ExecuteQueryRequest)
-	*w.reqRecorder = append(*w.reqRecorder, execReq)
+	if execReq, ok := m.(*btpb.ExecuteQueryRequest); ok {
+		*w.reqRecorder = append(*w.reqRecorder, proto.Clone(execReq).(*btpb.ExecuteQueryRequest))
+	}
 	return w.ClientStream.SendMsg(m)
 }
 
@@ -2409,5 +2468,175 @@ func newUnaryClientInterceptor(prepReqCount *int, respPtrs *[]prepareQueryResp, 
 		pqr.ValidUntil = timestamppb.New(time.Now().Add(*ttl))
 		pqr.Metadata = resps[*prepReqCount].resp.Metadata
 		return nil
+	}
+}
+
+func TestApplyBulk_MissingEntryResult(t *testing.T) {
+	ctx := context.Background()
+
+	errInjector := func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if strings.HasSuffix(info.FullMethod, "MutateRows") {
+			req := new(btpb.MutateRowsRequest)
+			if err := ss.RecvMsg(req); err != nil {
+				return err
+			}
+			// Return only entries 0 and 2 (omitting entry 1) on an OK stream
+			res := &btpb.MutateRowsResponse{
+				Entries: []*btpb.MutateRowsResponse_Entry{
+					{Index: 0, Status: &rpcpb.Status{Code: int32(codes.OK)}},
+					{Index: 2, Status: &rpcpb.Status{Code: int32(codes.OK)}},
+				},
+			}
+			return ss.SendMsg(res)
+		}
+		return handler(srv, ss)
+	}
+
+	tbl, cleanup, err := setupDefaultFakeServer(grpc.StreamInterceptor(errInjector))
+	if err != nil {
+		t.Fatalf("fake server setup: %v", err)
+	}
+	defer cleanup()
+
+	m1 := NewMutation()
+	m1.Set("cf", "col", 1, []byte("v1"))
+	m2 := NewMutation()
+	m2.Set("cf", "col", 1, []byte("v2"))
+	m3 := NewMutation()
+	m3.Set("cf", "col", 1, []byte("v3"))
+
+	errs, err := tbl.ApplyBulk(ctx, []string{"row1", "row2", "row3"}, []*Mutation{m1, m2, m3})
+	if err != nil {
+		t.Fatalf("ApplyBulk returned top-level error: %v, want nil", err)
+	}
+	if len(errs) != 3 {
+		t.Fatalf("ApplyBulk returned %d errors, want 3", len(errs))
+	}
+	if errs[0] != nil {
+		t.Errorf("errs[0] = %v, want nil", errs[0])
+	}
+	if status.Code(errs[1]) != codes.Internal {
+		t.Errorf("status.Code(errs[1]) = %v, want %v (err: %v)", status.Code(errs[1]), codes.Internal, errs[1])
+	}
+	if errs[2] != nil {
+		t.Errorf("errs[2] = %v, want nil", errs[2])
+	}
+}
+
+func TestInitializeMetadataAndMap_Error(t *testing.T) {
+	pqd := &preparedQueryData{
+		metadata: &btpb.ResultSetMetadata{
+			Schema: &btpb.ResultSetMetadata_ProtoSchema{
+				ProtoSchema: &btpb.ProtoSchema{
+					Columns: []*btpb.ColumnMetadata{
+						{Name: "bad", Type: &btpb.Type{Kind: nil}},
+					},
+				},
+			},
+		},
+	}
+	err := pqd.initializeMetadataAndMap()
+	if err == nil {
+		t.Fatal("expected initializeMetadataAndMap to return an error, got nil")
+	}
+	if pqd.Metadata != nil {
+		t.Fatalf("expected pqd.Metadata to remain nil on error, got %+v", pqd.Metadata)
+	}
+}
+
+func TestPrepareStatement_InvalidMetadataError(t *testing.T) {
+	var gotPrepReqCount int
+	var mockPrepQueryResps []prepareQueryResp
+	const defaultPreparedQueryTTL = 10 * time.Second
+	var testPreparedQueryTTL = defaultPreparedQueryTTL
+
+	testEnv, gotErr := NewEmulatedEnv(IntegrationTestConfig{})
+	if gotErr != nil {
+		t.Fatalf("NewEmulatedEnv failed: %v", gotErr)
+	}
+
+	conn, gotErr := grpc.Dial(testEnv.server.Addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock(),
+		grpc.WithUnaryInterceptor(
+			newUnaryClientInterceptor(&gotPrepReqCount, &mockPrepQueryResps, &testPreparedQueryTTL)),
+	)
+	if gotErr != nil {
+		t.Fatalf("grpc.Dial failed: %v", gotErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, gotErr := NewClientWithConfig(ctx, testEnv.config.Project, testEnv.config.Instance, disableMetricsConfig, option.WithGRPCConn(conn))
+	if gotErr != nil {
+		t.Fatalf("NewClientWithConfig failed: %v", gotErr)
+	}
+	defer client.Close()
+
+	mockPrepQueryResps = []prepareQueryResp{
+		{
+			resp: &btpb.PrepareQueryResponse{
+				PreparedQuery: []byte("query"),
+				Metadata: &btpb.ResultSetMetadata{
+					Schema: &btpb.ResultSetMetadata_ProtoSchema{
+						ProtoSchema: &btpb.ProtoSchema{
+							Columns: []*btpb.ColumnMetadata{
+								{Name: "bad", Type: &btpb.Type{Kind: nil}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := client.PrepareStatement(ctx, "SELECT * FROM users;", nil)
+	if err == nil {
+		t.Fatal("expected PrepareStatement to fail on invalid metadata, got nil")
+	}
+	if !strings.Contains(err.Error(), "error parsing metadata type for column") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestPreparedStatement_Metadata(t *testing.T) {
+	testEnv, err := NewEmulatedEnv(IntegrationTestConfig{})
+	if err != nil {
+		t.Fatalf("NewEmulatedEnv failed: %v", err)
+	}
+	defer testEnv.Close()
+
+	prepResp := newPrepareQueryResp("plan-1", colFamAddress)
+	unaryInterceptor := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		err := invoker(ctx, method, req, reply, cc, opts...)
+		if _, ok := req.(*btpb.PrepareQueryRequest); !ok {
+			return err
+		}
+		pqr := reply.(*btpb.PrepareQueryResponse)
+		pqr.PreparedQuery = prepResp.resp.PreparedQuery
+		pqr.ValidUntil = timestamppb.New(time.Now().Add(10 * time.Second))
+		pqr.Metadata = prepResp.resp.Metadata
+		return nil
+	}
+
+	conn, err := grpc.NewClient(testEnv.server.Addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(unaryInterceptor),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient failed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := NewClientWithConfig(ctx, testEnv.config.Project, testEnv.config.Instance, disableMetricsConfig, option.WithGRPCConn(conn))
+	if err != nil {
+		t.Fatalf("NewClientWithConfig failed: %v", err)
+	}
+	defer client.Close()
+
+	ps, err := client.PrepareStatement(ctx, "SELECT * FROM users;", nil)
+	if err != nil {
+		t.Fatalf("PrepareStatement: %v", err)
+	}
+	md := ps.Metadata()
+	if md == nil || len(md.Columns) != 2 || md.Columns[0].Name != "_key" || md.Columns[1].Name != colFamAddress {
+		t.Fatalf("ps.Metadata() = %+v, want 2 columns (_key, %q)", md, colFamAddress)
 	}
 }

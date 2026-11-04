@@ -54,6 +54,10 @@ func writeIdentity(udsPath, principal string, scopes []string) error {
 	}
 	path := filepath.Join(filepath.Dir(udsPath), identityFilename)
 	// 0600: identifier only, but keep it same-uid readable and nothing more.
+	// The mode is a no-op on Windows, which has no POSIX bits; there the file
+	// inherits its directory's ACL, same as the socket beside it. That is
+	// acceptable because the document carries no secret -- only a principal
+	// email and scope list.
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
@@ -72,10 +76,11 @@ func writeIdentity(udsPath, principal string, scopes []string) error {
 // was available but failed -- notably a metadata-server lookup that timed out or
 // errored -- which the caller surfaces as a warning rather than swallowing it.
 func principalFromCreds(ctx context.Context, creds *google.Credentials) (string, error) {
-	if creds != nil {
-		if email := emailFromCredsJSON(creds.JSON); email != "" {
-			return email, nil
-		}
+	if creds == nil {
+		return "", nil
+	}
+	if len(creds.JSON) > 0 {
+		return emailFromCredsJSON(creds.JSON), nil
 	}
 	if metadata.OnGCE() {
 		// Link-local metadata server; no external egress, no IAM permission.
@@ -83,7 +88,7 @@ func principalFromCreds(ctx context.Context, creds *google.Credentials) (string,
 		if err != nil {
 			return "", fmt.Errorf("resolve principal from metadata server: %w", err)
 		}
-		return email, nil
+		return strings.TrimSpace(email), nil
 	}
 	return "", nil
 }

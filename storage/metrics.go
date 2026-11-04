@@ -39,6 +39,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/exemplar"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 
@@ -203,6 +204,7 @@ func initMetrics(ctx context.Context, projectID string, config *storageConfig) (
 		provider = sdkmetric.NewMeterProvider(
 			sdkmetric.WithReader(reader),
 			sdkmetric.WithResource(res),
+			sdkmetric.WithExemplarFilter(exemplar.TraceBasedFilter),
 			sdkmetric.WithView(
 				sdkmetric.NewView(
 					sdkmetric.Instrument{Name: "rpc.client.call.duration", Kind: sdkmetric.InstrumentKindHistogram},
@@ -350,7 +352,7 @@ func initMetrics(ctx context.Context, projectID string, config *storageConfig) (
 
 	if isOtelDebugMetricsEnabled(config) {
 		networkBytesSent, err = meter.Int64Counter(
-			"gcp.storage.client.network.egress_bytes_count",
+			"gcp.storage.client.network.bytes.sent",
 			metric.WithDescription("Total physical bytes sent over the wire socket (gRPC only)."),
 			metric.WithUnit("By"),
 		)
@@ -359,7 +361,7 @@ func initMetrics(ctx context.Context, projectID string, config *storageConfig) (
 		}
 
 		networkBytesReceived, err = meter.Int64Counter(
-			"gcp.storage.client.network.ingress_bytes_count",
+			"gcp.storage.client.network.bytes.received",
 			metric.WithDescription("Total physical bytes received over the wire socket (gRPC only)."),
 			metric.WithUnit("By"),
 		)
@@ -369,7 +371,7 @@ func initMetrics(ctx context.Context, projectID string, config *storageConfig) (
 
 		stallDuration, err = meter.Float64Histogram(
 			"gcp.storage.client.stall.duration",
-			metric.WithDescription("Duration a connection was stalled waiting for the first byte before being aborted."),
+			metric.WithDescription("Stall timeout after which a read attempt was aborted while waiting for the initial response (response headers for HTTP, first response message for gRPC), or a write attempt was aborted due to lack of chunk progress."),
 			metric.WithUnit("s"),
 		)
 		if err != nil {
@@ -385,7 +387,7 @@ func initMetrics(ctx context.Context, projectID string, config *storageConfig) (
 			return nil, nil, err
 		}
 		activeRequests, err = meter.Int64UpDownCounter(
-			"gcp.storage.client.active_requests",
+			"gcp.storage.client.request.active",
 			metric.WithDescription("Number of active GCS client requests"),
 			metric.WithUnit("1"),
 		)
@@ -516,6 +518,24 @@ func grpcCodeToString(code codes.Code) string {
 	}
 }
 
+// isServerChecksumError reports whether err is the service rejecting a
+// request because a CRC32C or MD5 checksum did not match, for example
+// "Object crc32c mismatch: ..." (gRPC InvalidArgument) or
+// "Provided CRC32C \"...\" doesn't match calculated CRC32C \"...\"" (HTTP 400).
+func isServerChecksumError(err error, errStr string) bool {
+	if !(strings.Contains(errStr, "crc32c") || strings.Contains(errStr, "md5")) || !strings.Contains(errStr, "match") {
+		return false
+	}
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) && apiErr.Code == http.StatusBadRequest {
+		return true
+	}
+	if st, ok := status.FromError(err); ok {
+		return st.Code() == codes.InvalidArgument || st.Code() == codes.DataLoss
+	}
+	return false
+}
+
 // computeErrorType maps the request result to the standard error.type values.
 func computeErrorType(err error, isHTTP bool, statusCode int64) string {
 	if err == nil {
@@ -525,57 +545,82 @@ func computeErrorType(err error, isHTTP bool, statusCode int64) string {
 		return "OK"
 	}
 
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return "OK"
 	}
 
 	errStr := strings.ToLower(err.Error())
 
-	if err == context.Canceled || strings.Contains(errStr, "context canceled") {
+	if errors.Is(err, context.Canceled) || strings.Contains(errStr, "context canceled") {
 		return "CANCELLED"
 	}
 
-	if err == context.DeadlineExceeded || strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "timeout") {
+	// gRPC reports a client-side deadline as a DeadlineExceeded status with
+	// this message; other DeadlineExceeded statuses come from the service.
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errStr, "context deadline exceeded") {
 		return "TIMEOUT"
 	}
 
-	if strings.Contains(errStr, "checksum") || strings.Contains(errStr, "mismatch") {
+	// The not-found sentinels are returned without an underlying status, for
+	// example by the HTTP XML reader on a 404 response.
+	if errors.Is(err, ErrObjectNotExist) || errors.Is(err, ErrBucketNotExist) {
+		return "NOT_FOUND"
+	}
+
+	if errors.Is(err, errChecksumMismatch) || isServerChecksumError(err, errStr) {
 		return "CHECKSUM_MISMATCH"
 	}
 
-	if strings.Contains(errStr, "auth") || strings.Contains(errStr, "credentials") || strings.Contains(errStr, "token") || strings.Contains(errStr, "key") {
-		return "AUTHENTICATION_ERROR"
-	}
-
-	if strings.Contains(errStr, "no such host") || strings.Contains(errStr, "no address") {
-		return "DNS_FAILURE"
-	}
-
-	if strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "eof") {
-		return "CONNECTION_ERROR"
-	}
-
-	if strings.Contains(errStr, "tls") || strings.Contains(errStr, "certificate") || strings.Contains(errStr, "x509") {
-		return "TLS_FAILURE"
-	}
-
-	if !isHTTP {
-		if st, ok := status.FromError(err); ok && st.Code() != codes.OK {
-			return grpcCodeToString(st.Code())
-		}
-	}
-
+	// Prefer the status returned by the service over matching the error text,
+	// which can contain resource names such as "my-key" or "geofence.json".
 	if isHTTP {
 		var apiErr *googleapi.Error
-		if errors.As(err, &apiErr) {
+		if errors.As(err, &apiErr) && apiErr.Code > 0 {
 			return mapHTTPStatusCode(apiErr.Code)
 		}
 		if statusCode >= 400 {
 			return mapHTTPStatusCode(int(statusCode))
 		}
 	}
+	var grpcType string
+	if !isHTTP {
+		if st, ok := status.FromError(err); ok && st.Code() != codes.OK {
+			grpcType = grpcCodeToString(st.Code())
+			// Unknown and Unavailable are also used for client-side and
+			// network failures, which the message describes more precisely.
+			if st.Code() != codes.Unknown && st.Code() != codes.Unavailable {
+				return grpcType
+			}
+		}
+	}
 
+	if errType := errorTypeFromMessage(errStr); errType != "" {
+		return errType
+	}
+	if grpcType != "" {
+		return grpcType
+	}
 	return "UNKNOWN"
+}
+
+// errorTypeFromMessage classifies client-side and network errors by their
+// lowercase error text. It returns "" if the text matches no known class.
+func errorTypeFromMessage(errStr string) string {
+	switch {
+	case strings.Contains(errStr, "timeout"):
+		return "TIMEOUT"
+	case strings.Contains(errStr, "checksum") || strings.Contains(errStr, "mismatch"):
+		return "CHECKSUM_MISMATCH"
+	case strings.Contains(errStr, "auth") || strings.Contains(errStr, "credentials") || strings.Contains(errStr, "token") || strings.Contains(errStr, "key"):
+		return "AUTHENTICATION_ERROR"
+	case strings.Contains(errStr, "no such host") || strings.Contains(errStr, "no address"):
+		return "DNS_FAILURE"
+	case strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "eof"):
+		return "CONNECTION_ERROR"
+	case strings.Contains(errStr, "tls") || strings.Contains(errStr, "certificate") || strings.Contains(errStr, "x509"):
+		return "TLS_FAILURE"
+	}
+	return ""
 }
 
 // mapHTTPStatusCode converts an HTTP status code to a canonical API error string.
@@ -590,8 +635,12 @@ func mapHTTPStatusCode(code int) string {
 		return "PERMISSION_DENIED"
 	case 404:
 		return "NOT_FOUND"
+	case 408:
+		return "DEADLINE_EXCEEDED"
 	case 409:
 		return "ABORTED"
+	case 412:
+		return "FAILED_PRECONDITION"
 	case 416:
 		return "OUT_OF_RANGE"
 	case 429:
@@ -643,12 +692,14 @@ func (cm *clientMetrics) recordRPC(ctx context.Context, method, target string, d
 	logicalMethod := methodName
 	if state != nil {
 		logicalMethod = state.method
+		state.setTarget(target)
 	}
 	attemptAttrs := make([]attribute.KeyValue, 0, 5)
 	attemptAttrs = append(attemptAttrs,
 		attribute.String("rpc.system.name", "grpc"),
 		attribute.String("rpc.method", logicalMethod),
 		attribute.Int64("rpc.grpc.status_code", statusCode),
+		attribute.String("server.address", stripPort(target)),
 		attribute.String("error.type", errorType),
 	)
 	cm.attempts.Add(ctx, 1, metric.WithAttributes(injectAPIMethod(ctx, attemptAttrs)...))
@@ -659,6 +710,7 @@ func (cm *clientMetrics) recordRPC(ctx context.Context, method, target string, d
 		errorAttrs = append(errorAttrs,
 			attribute.String("rpc.system.name", "grpc"),
 			attribute.String("rpc.method", logicalMethod),
+			attribute.String("server.address", stripPort(target)),
 			attribute.String("error.type", errorType),
 		)
 		cm.errors.Add(ctx, 1, metric.WithAttributes(injectAPIMethod(ctx, errorAttrs)...))
@@ -667,7 +719,7 @@ func (cm *clientMetrics) recordRPC(ctx context.Context, method, target string, d
 	// For unary calls, record TTFB equal to the total attempt latency.
 	isStreaming := methodName == "ReadObject" || methodName == "WriteObject" || methodName == "BidiReadObject" || methodName == "BidiWriteObject"
 	if !isStreaming {
-		ttfbAttrs := []attribute.KeyValue{attribute.String("rpc.method", logicalMethod)}
+		ttfbAttrs := []attribute.KeyValue{attribute.String("rpc.system.name", "grpc"), attribute.String("rpc.method", logicalMethod), attribute.String("server.address", stripPort(target))}
 		cm.ttfb.Record(ctx, duration, metric.WithAttributes(injectAPIMethod(ctx, ttfbAttrs)...))
 	}
 }
@@ -841,12 +893,17 @@ func (rt *metricsRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	errorType := computeErrorType(err, true, statusCode)
 
 	if rt.metrics != nil {
+		state := metricsStateFromContext(req.Context())
+		if state != nil {
+			state.setTarget(req.URL.Host)
+		}
 		// Record attempt.
 		attemptAttrs := make([]attribute.KeyValue, 0, 4)
 		attemptAttrs = append(attemptAttrs,
 			attribute.String("rpc.system.name", "http"),
 			attribute.String("rpc.method", logicalMethod),
 			attribute.Int64("http.response.status_code", statusCode),
+			attribute.String("server.address", stripPort(req.URL.Host)),
 			attribute.String("error.type", errorType),
 		)
 		rt.metrics.attempts.Add(req.Context(), 1, metric.WithAttributes(injectAPIMethod(req.Context(), attemptAttrs)...))
@@ -857,6 +914,7 @@ func (rt *metricsRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 			errorAttrs = append(errorAttrs,
 				attribute.String("rpc.system.name", "http"),
 				attribute.String("rpc.method", logicalMethod),
+				attribute.String("server.address", stripPort(req.URL.Host)),
 				attribute.String("error.type", errorType),
 			)
 			rt.metrics.errors.Add(req.Context(), 1, metric.WithAttributes(injectAPIMethod(req.Context(), errorAttrs)...))
@@ -887,7 +945,7 @@ func (rt *metricsRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 		isResumableInit := req.Method == "POST" && strings.Contains(req.URL.Path, "/upload/") && req.URL.Query().Get("uploadType") == "resumable"
 		if !isDownload || isResumableInit {
 			duration := time.Since(startTime).Seconds()
-			ttfbAttrs := []attribute.KeyValue{attribute.String("rpc.method", logicalMethod)}
+			ttfbAttrs := []attribute.KeyValue{attribute.String("rpc.system.name", "http"), attribute.String("rpc.method", logicalMethod), attribute.String("server.address", stripPort(req.URL.Host))}
 			rt.metrics.ttfb.Record(req.Context(), duration, metric.WithAttributes(injectAPIMethod(req.Context(), ttfbAttrs)...))
 		}
 	}
@@ -938,7 +996,7 @@ func (w *wrappedResponseBody) Read(p []byte) (n int, err error) {
 		if state != nil {
 			logicalMethod = state.method
 		}
-		w.metrics.ttfb.Record(w.req.Context(), duration, metric.WithAttributes(attribute.String("rpc.method", logicalMethod)))
+		w.metrics.ttfb.Record(w.req.Context(), duration, metric.WithAttributes(attribute.String("rpc.system.name", "http"), attribute.String("rpc.method", logicalMethod), attribute.String("server.address", stripPort(w.req.URL.Host))))
 	}
 	n, err = w.ReadCloser.Read(p)
 	if err != nil {
@@ -1169,7 +1227,7 @@ func (w *wrappedClientStream) recordTTFB(m interface{}) {
 		if state != nil {
 			logicalMethod = state.method
 		}
-		w.metrics.ttfb.Record(w.ctx, duration, metric.WithAttributes(attribute.String("rpc.method", logicalMethod)))
+		w.metrics.ttfb.Record(w.ctx, duration, metric.WithAttributes(attribute.String("rpc.system.name", "grpc"), attribute.String("rpc.method", logicalMethod), attribute.String("server.address", stripPort(w.target))))
 	}
 }
 
@@ -1185,11 +1243,39 @@ func injectAPIMethod(ctx context.Context, attrs []attribute.KeyValue) []attribut
 }
 
 type metricsState struct {
+	target    atomic.Pointer[string]
 	method    string
 	startTime time.Time
 	metrics   *clientMetrics
 	isHTTP    bool
 	record    func(error)
+}
+
+func (s *metricsState) setTarget(t string) {
+	if s == nil {
+		return
+	}
+	s.target.Store(&t)
+}
+
+func (s *metricsState) getSystemName() string {
+	if s == nil {
+		return ""
+	}
+	if s.isHTTP {
+		return "http"
+	}
+	return "grpc"
+}
+
+func (s *metricsState) getTarget() string {
+	if s == nil {
+		return ""
+	}
+	if p := s.target.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func contextWithMetricsState(ctx context.Context, state *metricsState) context.Context {
@@ -1231,7 +1317,9 @@ func (cm *clientMetrics) startOperation(ctx context.Context, method string, isHT
 			errorType := computeErrorType(err, isHTTP, 0)
 
 			attrs := []attribute.KeyValue{
+				attribute.String("rpc.system.name", state.getSystemName()),
 				attribute.String("rpc.method", method),
+				attribute.String("server.address", stripPort(state.getTarget())),
 				attribute.String("error.type", errorType),
 			}
 			opts := metric.WithAttributes(injectAPIMethod(ctx, attrs)...)

@@ -236,6 +236,39 @@ func NewSqlSslCertsClient(ctx context.Context, opts ...option.ClientOption) (*Sq
 		client.CallOptions.Insert = append(client.CallOptions.Insert, gax.WithClientMetrics(metrics))
 		client.CallOptions.List = append(client.CallOptions.List, gax.WithClientMetrics(metrics))
 	}
+	if gax.IsFeatureEnabled("TRACING") {
+		tracing := gax.NewClientTracing(
+			gax.WithTracingAttributes(map[string]string{
+				gax.ClientService:  "sqladmin",
+				gax.ClientVersion:  getVersionClient(),
+				gax.ClientArtifact: "cloud.google.com/go/sql/apiv1beta4",
+				gax.RPCSystem:      "grpc",
+				gax.URLDomain:      "sqladmin.googleapis.com",
+			}),
+		)
+
+		client.CallOptions.Delete = append(client.CallOptions.Delete, gax.WithClientTracing(tracing))
+		client.CallOptions.Get = append(client.CallOptions.Get, gax.WithClientTracing(tracing))
+		client.CallOptions.Insert = append(client.CallOptions.Insert, gax.WithClientTracing(tracing))
+		client.CallOptions.List = append(client.CallOptions.List, gax.WithClientTracing(tracing))
+	}
+	if gax.IsFeatureEnabled("LOGGING") {
+		logging := gax.NewClientLogging(
+			gax.WithLoggerProvider(c.logger),
+			gax.WithLoggingAttributes(map[string]string{
+				gax.ClientService:  "sqladmin",
+				gax.ClientVersion:  getVersionClient(),
+				gax.ClientArtifact: "cloud.google.com/go/sql/apiv1beta4",
+				gax.RPCSystem:      "grpc",
+				gax.URLDomain:      "sqladmin.googleapis.com",
+			}),
+		)
+
+		client.CallOptions.Delete = append(client.CallOptions.Delete, gax.WithClientLogging(logging))
+		client.CallOptions.Get = append(client.CallOptions.Get, gax.WithClientLogging(logging))
+		client.CallOptions.Insert = append(client.CallOptions.Insert, gax.WithClientLogging(logging))
+		client.CallOptions.List = append(client.CallOptions.List, gax.WithClientLogging(logging))
+	}
 
 	client.internalClient = c
 
@@ -327,6 +360,39 @@ func NewSqlSslCertsRESTClient(ctx context.Context, opts ...option.ClientOption) 
 		callOpts.Get = append(callOpts.Get, gax.WithClientMetrics(metrics))
 		callOpts.Insert = append(callOpts.Insert, gax.WithClientMetrics(metrics))
 		callOpts.List = append(callOpts.List, gax.WithClientMetrics(metrics))
+	}
+	if gax.IsFeatureEnabled("TRACING") {
+		tracing := gax.NewClientTracing(
+			gax.WithTracingAttributes(map[string]string{
+				gax.ClientService:  "sqladmin",
+				gax.ClientVersion:  getVersionClient(),
+				gax.ClientArtifact: "cloud.google.com/go/sql/apiv1beta4",
+				gax.RPCSystem:      "http",
+				gax.URLDomain:      "sqladmin.googleapis.com",
+			}),
+		)
+
+		callOpts.Delete = append(callOpts.Delete, gax.WithClientTracing(tracing))
+		callOpts.Get = append(callOpts.Get, gax.WithClientTracing(tracing))
+		callOpts.Insert = append(callOpts.Insert, gax.WithClientTracing(tracing))
+		callOpts.List = append(callOpts.List, gax.WithClientTracing(tracing))
+	}
+	if gax.IsFeatureEnabled("LOGGING") {
+		logging := gax.NewClientLogging(
+			gax.WithLoggerProvider(c.logger),
+			gax.WithLoggingAttributes(map[string]string{
+				gax.ClientService:  "sqladmin",
+				gax.ClientVersion:  getVersionClient(),
+				gax.ClientArtifact: "cloud.google.com/go/sql/apiv1beta4",
+				gax.RPCSystem:      "http",
+				gax.URLDomain:      "sqladmin.googleapis.com",
+			}),
+		)
+
+		callOpts.Delete = append(callOpts.Delete, gax.WithClientLogging(logging))
+		callOpts.Get = append(callOpts.Get, gax.WithClientLogging(logging))
+		callOpts.Insert = append(callOpts.Insert, gax.WithClientLogging(logging))
+		callOpts.List = append(callOpts.List, gax.WithClientLogging(logging))
 	}
 
 	return &SqlSslCertsClient{internalClient: c, CallOptions: callOpts}, nil
@@ -460,6 +526,13 @@ func (c *sqlSslCertsRESTClient) Delete(ctx context.Context, req *sqlpb.SqlSslCer
 	if err != nil {
 		return nil, err
 	}
+	if err = gax.ValidatePathExpressions(
+		req.GetProject(),
+		req.GetInstance(),
+		req.GetSha1Fingerprint(),
+	); err != nil {
+		return nil, err
+	}
 	baseUrl.Path += fmt.Sprintf("/sql/v1beta4/projects/%v/instances/%v/sslCerts/%v", req.GetProject(), req.GetInstance(), req.GetSha1Fingerprint())
 
 	params := url.Values{}
@@ -514,6 +587,13 @@ func (c *sqlSslCertsRESTClient) Delete(ctx context.Context, req *sqlpb.SqlSslCer
 func (c *sqlSslCertsRESTClient) Get(ctx context.Context, req *sqlpb.SqlSslCertsGetRequest, opts ...gax.CallOption) (*sqlpb.SslCert, error) {
 	baseUrl, err := url.Parse(c.endpoint)
 	if err != nil {
+		return nil, err
+	}
+	if err = gax.ValidatePathExpressions(
+		req.GetProject(),
+		req.GetInstance(),
+		req.GetSha1Fingerprint(),
+	); err != nil {
 		return nil, err
 	}
 	baseUrl.Path += fmt.Sprintf("/sql/v1beta4/projects/%v/instances/%v/sslCerts/%v", req.GetProject(), req.GetInstance(), req.GetSha1Fingerprint())
@@ -579,6 +659,12 @@ func (c *sqlSslCertsRESTClient) Insert(ctx context.Context, req *sqlpb.SqlSslCer
 	if err != nil {
 		return nil, err
 	}
+	if err = gax.ValidatePathExpressions(
+		req.GetProject(),
+		req.GetInstance(),
+	); err != nil {
+		return nil, err
+	}
 	baseUrl.Path += fmt.Sprintf("/sql/v1beta4/projects/%v/instances/%v/sslCerts", req.GetProject(), req.GetInstance())
 
 	params := url.Values{}
@@ -631,6 +717,12 @@ func (c *sqlSslCertsRESTClient) Insert(ctx context.Context, req *sqlpb.SqlSslCer
 func (c *sqlSslCertsRESTClient) List(ctx context.Context, req *sqlpb.SqlSslCertsListRequest, opts ...gax.CallOption) (*sqlpb.SslCertsListResponse, error) {
 	baseUrl, err := url.Parse(c.endpoint)
 	if err != nil {
+		return nil, err
+	}
+	if err = gax.ValidatePathExpressions(
+		req.GetProject(),
+		req.GetInstance(),
+	); err != nil {
 		return nil, err
 	}
 	baseUrl.Path += fmt.Sprintf("/sql/v1beta4/projects/%v/instances/%v/sslCerts", req.GetProject(), req.GetInstance())
