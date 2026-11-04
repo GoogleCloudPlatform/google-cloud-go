@@ -1226,6 +1226,7 @@ libraries:
   - name: saasplatform
     version: 0.12.1
     apis:
+      - path: google/cloud/saasplatform/saasservicemgmt/v1
       - path: google/cloud/saasplatform/saasservicemgmt/v1beta1
   - name: scheduler
     version: 1.18.1
