@@ -77,7 +77,7 @@ type DynamicChannelPoolConfig struct {
 	SelectionStrategy int // 0 = DCPPowerOfTwoLeastBusy, 1 = DCPRoundRobin
 }
 
-// ClientConfig configures a SharedCoreService client pool.
+// ClientConfig configures a Service client pool.
 type ClientConfig struct {
 	Endpoint                 string
 	UniverseDomain           string
@@ -89,23 +89,33 @@ type ClientConfig struct {
 	PlainText                bool
 	DisableBuiltInAuth       bool
 	DynamicChannelPoolConfig DynamicChannelPoolConfig
-	LogFunc                  func(level string, message string)
+	// LogFunc is an optional callback for transport log messages. Must be safe for concurrent calls.
+	LogFunc func(level string, message string)
 }
 
-// RetrySettings configures per-RPC timeout and retry backoff parameters.
+// RetrySettings configures per-RPC timeout and retry backoff parameters in milliseconds.
 type RetrySettings struct {
-	TimeoutMs            int64
-	HasTimeout           bool
+	// TimeoutMs is the per-RPC deadline in milliseconds when HasTimeout is true.
+	TimeoutMs int64
+	// HasTimeout indicates whether TimeoutMs should be applied as a deadline.
+	HasTimeout bool
+	// UntimedRetryBudgetMs bounds total retry elapsed time in milliseconds when HasTimeout is false (defaults to 60,000 ms when <= 0).
 	UntimedRetryBudgetMs int64
-	InitialRetryDelayMs  int64
-	MaxRetryDelayMs      int64
+	// InitialRetryDelayMs is the initial retry backoff delay in milliseconds (defaults to 200 ms when <= 0).
+	InitialRetryDelayMs int64
+	// MaxRetryDelayMs is the maximum retry backoff delay in milliseconds (defaults to 32,000 ms when <= 0).
+	MaxRetryDelayMs int64
+	// RetryDelayMultiplier is the exponential backoff multiplier (defaults to 1.3 when <= 0).
 	RetryDelayMultiplier float64
 }
 
 // StreamBatchConfig configures row batching, chunk checkpointing, and arena buffer pooling.
 type StreamBatchConfig struct {
-	BatchRowSize            int
-	FlushOnChunkBoundary    bool
+	// BatchRowSize is the target number of rows per StreamBatch callback (defaults to 64 when <= 0).
+	BatchRowSize int
+	// FlushOnChunkBoundary flushes accumulated complete rows at the end of each PartialResultSet chunk.
+	FlushOnChunkBoundary bool
+	// MaxUncheckpointedChunks bounds how many chunks without a resume_token can be buffered before pausing row emission.
 	MaxUncheckpointedChunks int
 	// ReuseArenaBuffers pools and reuses backing slices for StreamBatch.Cells and
 	// StreamBatch.ArenaBytes across batches; when true, callers must consume or copy
@@ -115,11 +125,16 @@ type StreamBatchConfig struct {
 
 // StreamOptions configures optional metadata, telemetry, and trace-context optimizations for a stream.
 type StreamOptions struct {
-	SkipMetadata       bool
+	// SkipMetadata omits serialized ResultSetMetadataBytes when the schema hash matches ExpectedSchemaHash.
+	SkipMetadata bool
+	// ExpectedSchemaHash is the caller's cached FNV-1a 32-bit schema hash used when SkipMetadata is true.
 	ExpectedSchemaHash uint32
-	SkipTelemetry      bool
-	SkipReadTimestamp  bool
-	SkipTraceContext   bool
+	// SkipTelemetry omits per-attempt telemetry formatting when built-in metrics are disabled.
+	SkipTelemetry bool
+	// SkipReadTimestamp skips parsing read_timestamp from TransactionMetadata when not requested.
+	SkipReadTimestamp bool
+	// SkipTraceContext skips OpenTelemetry span context extraction when end-to-end tracing is disabled.
+	SkipTraceContext bool
 }
 
 // StreamRequest encapsulates a single ExecuteStreamingSql invocation from a host language binding.

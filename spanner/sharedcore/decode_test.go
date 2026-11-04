@@ -277,16 +277,37 @@ func TestKindMismatchReturnsError_DecodeAndPack(t *testing.T) {
 
 	for _, tc := range mismatchCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := DecodeCellValue(tc.val, tc.typ); err == nil {
+			_, err := DecodeCellValue(tc.val, tc.typ)
+			if err == nil {
 				t.Fatalf("DecodeCellValue(%s): expected error, got nil", tc.name)
+			}
+			if gotCount := strings.Count(err.Error(), "sharedcore:"); gotCount != 1 {
+				t.Fatalf("DecodeCellValue(%s): expected exactly 1 'sharedcore:' prefix, got %d in %q", tc.name, gotCount, err.Error())
+			}
+			if strings.Contains(tc.name, "mismatched") && !strings.Contains(err.Error(), "element 0:") {
+				t.Fatalf("DecodeCellValue(%s): expected 'element 0:' in nested error, got %q", tc.name, err.Error())
 			}
 			fields := []*sppb.StructType_Field{{Name: "col", Type: tc.typ}}
 			rows := [][]*proto3.Value{{tc.val}}
-			if decodedRows, err := DecodeRows(rows, fields); err == nil || decodedRows != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
+			decodedRows, err := DecodeRows(rows, fields)
+			if err == nil || decodedRows != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
 				t.Fatalf("DecodeRows(%s): expected (nil, row/col wrapped error), got rows=%+v err=%v", tc.name, decodedRows, err)
 			}
-			if cells, arena, _, _, err := PackRowsIntoArena(rows, fields); err == nil || cells != nil || arena != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
+			if gotCount := strings.Count(err.Error(), "sharedcore:"); gotCount != 1 {
+				t.Fatalf("DecodeRows(%s): expected exactly 1 'sharedcore:' prefix, got %d in %q", tc.name, gotCount, err.Error())
+			}
+			if strings.Contains(tc.name, "mismatched") && !strings.Contains(err.Error(), "element 0:") {
+				t.Fatalf("DecodeRows(%s): expected 'element 0:' in nested error, got %q", tc.name, err.Error())
+			}
+			cells, arena, _, _, err := PackRowsIntoArena(rows, fields)
+			if err == nil || cells != nil || arena != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
 				t.Fatalf("PackRowsIntoArena(%s): expected (nil, nil, row/col wrapped error), got cells=%+v err=%v", tc.name, cells, err)
+			}
+			if gotCount := strings.Count(err.Error(), "sharedcore:"); gotCount != 1 {
+				t.Fatalf("PackRowsIntoArena(%s): expected exactly 1 'sharedcore:' prefix, got %d in %q", tc.name, gotCount, err.Error())
+			}
+			if strings.Contains(tc.name, "mismatched") && !strings.Contains(err.Error(), "element 0:") {
+				t.Fatalf("PackRowsIntoArena(%s): expected 'element 0:' in nested error, got %q", tc.name, err.Error())
 			}
 			if cells, arena, _, _, scratch, err := packRowsIntoArenaInternal(rows, fields, true); err == nil || cells != nil || arena != nil || scratch != nil || !strings.Contains(err.Error(), `sharedcore: row 0, col 0 ("col"):`) {
 				t.Fatalf("packRowsIntoArenaInternal(%s, usePool=true): expected error and released scratch, got err=%v", tc.name, err)
@@ -400,7 +421,7 @@ func TestFloatAndTimestampStringFallbacks(t *testing.T) {
 			}
 			cells, arena, _, _, err := PackRowsIntoArena([][]*proto3.Value{{val}}, []*sppb.StructType_Field{{Name: "f", Type: typ}})
 			if err != nil || len(cells) != 1 || cells[0].Kind != int32(KindString) || string(arena[cells[0].Offset:cells[0].Offset+cells[0].Len]) != nonCanonical {
-				t.Fatalf("PackRowsIntoArena(%v, %q): expected KindString in arena, got cell=%+v err=%v", code, nonCanonical, cells[0], err)
+				t.Fatalf("PackRowsIntoArena(%v, %q): expected KindString in arena, got cells=%+v err=%v", code, nonCanonical, cells, err)
 			}
 		}
 		for _, special := range []string{"Infinity", "-Infinity", "NaN"} {
@@ -415,7 +436,7 @@ func TestFloatAndTimestampStringFallbacks(t *testing.T) {
 			}
 			cells, _, _, _, err := PackRowsIntoArena([][]*proto3.Value{{val}}, []*sppb.StructType_Field{{Name: "f", Type: typ}})
 			if err != nil || len(cells) != 1 || cells[0].Kind != int32(wantKind) {
-				t.Fatalf("PackRowsIntoArena(%v, %q): expected %v, got %+v err=%v", code, special, wantKind, cells[0], err)
+				t.Fatalf("PackRowsIntoArena(%v, %q): expected %v, got cells=%+v err=%v", code, special, wantKind, cells, err)
 			}
 		}
 	}
@@ -434,7 +455,7 @@ func TestFloatAndTimestampStringFallbacks(t *testing.T) {
 		}
 		cells, arena, _, _, err := PackRowsIntoArena([][]*proto3.Value{{val}}, []*sppb.StructType_Field{{Name: "ts", Type: tsType}})
 		if err != nil || len(cells) != 1 || cells[0].Kind != int32(KindString) || string(arena[cells[0].Offset:cells[0].Offset+cells[0].Len]) != rawTS {
-			t.Fatalf("PackRowsIntoArena(TIMESTAMP, %q): expected KindString fallback, got %+v err=%v", rawTS, cells[0], err)
+			t.Fatalf("PackRowsIntoArena(TIMESTAMP, %q): expected KindString fallback, got cells=%+v err=%v", rawTS, cells, err)
 		}
 	}
 
@@ -620,7 +641,7 @@ func TestTimestampBoundaries_CalendarBranches_RaggedRows_ManyCols_AndOutlierRow0
 		}
 		cells, _, _, _, err := PackRowsIntoArena([][]*proto3.Value{{proto3.NewStringValue(raw)}}, []*sppb.StructType_Field{{Name: "ts", Type: tsType}})
 		if err != nil || len(cells) != 1 || cells[0].Kind != int32(KindTimestamp) || int64(cells[0].NumBits) != wantSec || int32(cells[0].Flags) != wantNano {
-			t.Fatalf("PackRowsIntoArena(%q): expected (%d, %d), got %+v err=%v", raw, wantSec, wantNano, cells[0], err)
+			t.Fatalf("PackRowsIntoArena(%q): expected (%d, %d), got cells=%+v err=%v", raw, wantSec, wantNano, cells, err)
 		}
 	}
 

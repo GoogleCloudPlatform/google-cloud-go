@@ -291,7 +291,7 @@ func isNullProtoValue(v *proto3.Value) bool {
 }
 
 func errUnexpectedValueKind(v *proto3.Value, code sppb.TypeCode) error {
-	return fmt.Errorf("sharedcore: unexpected protobuf value kind %T for Spanner type %v", v.Kind, code)
+	return fmt.Errorf("unexpected protobuf value kind %T for Spanner type %v", v.Kind, code)
 }
 
 func packCellIntoArena(v *proto3.Value, t *sppb.Type, dstIdx int, cells *[]PackedCell, arenaBytes *[]byte) error {
@@ -464,6 +464,16 @@ func reserveChildCells(cells *[]PackedCell, n int) int {
 	return childStart
 }
 
+func listChildType(kind ValueKind, i int, elemType *sppb.Type, structFields []*sppb.StructType_Field) *sppb.Type {
+	if kind == KindStruct {
+		if i < len(structFields) && structFields[i] != nil {
+			return structFields[i].Type
+		}
+		return nil
+	}
+	return elemType
+}
+
 func packListValue(
 	v *proto3.Value,
 	kind ValueKind,
@@ -487,16 +497,9 @@ func packListValue(
 		Len:    uint32(n),
 	}
 	for i, elem := range vals {
-		childType := elemType
-		if kind == KindStruct {
-			if i < len(structFields) && structFields[i] != nil {
-				childType = structFields[i].Type
-			} else {
-				childType = nil
-			}
-		}
+		childType := listChildType(kind, i, elemType, structFields)
 		if err := packCellIntoArena(elem, childType, childStart+i, cells, arenaBytes); err != nil {
-			return err
+			return fmt.Errorf("element %d: %w", i, err)
 		}
 	}
 	return nil
@@ -532,7 +535,11 @@ func packDefaultValue(v *proto3.Value, code sppb.TypeCode, dstIdx int, cells *[]
 
 // DecodeCellValue decodes a single protobuf Value into a typed SpannerValue based on its Spanner Type.
 func DecodeCellValue(v *proto3.Value, t *sppb.Type) (SpannerValue, error) {
-	return decodeCellValueWithPool(v, t, nil)
+	val, err := decodeCellValueWithPool(v, t, nil)
+	if err != nil {
+		return SpannerValue{}, fmt.Errorf("sharedcore: %w", err)
+	}
+	return val, nil
 }
 
 func decodeCellValueWithPool(v *proto3.Value, t *sppb.Type, bytePool *[]byte) (SpannerValue, error) {
@@ -677,17 +684,10 @@ func decodeListValue(
 	vals := lv.ListValue.Values
 	children := make([]SpannerValue, len(vals))
 	for i, elem := range vals {
-		childType := elemType
-		if kind == KindStruct {
-			if i < len(structFields) && structFields[i] != nil {
-				childType = structFields[i].Type
-			} else {
-				childType = nil
-			}
-		}
+		childType := listChildType(kind, i, elemType, structFields)
 		childVal, err := decodeCellValueWithPool(elem, childType, bytePool)
 		if err != nil {
-			return SpannerValue{}, err
+			return SpannerValue{}, fmt.Errorf("element %d: %w", i, err)
 		}
 		children[i] = childVal
 	}

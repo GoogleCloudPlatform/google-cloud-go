@@ -22,7 +22,6 @@ import (
 	"crypto/x509"
 	"log"
 	"math"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -44,7 +43,18 @@ import (
 
 const sharedCorePlaceholderDB = "projects/shared-core/instances/shared-core/databases/shared-core"
 
-var sharedCoreFallbackRootCAPEM atomic.Value
+var (
+	sharedCoreFallbackRootCAPEM atomic.Value
+	systemCertPool              = x509.SystemCertPool
+	setFallbackRoots            = x509.SetFallbackRoots
+)
+
+func safeSetFallbackRoots(pool *x509.CertPool) {
+	defer func() {
+		_ = recover()
+	}()
+	setFallbackRoots(pool)
+}
 
 // SetSharedCoreFallbackRootCAPEM registers an in-memory PEM bundle of root CA
 // certificates (e.g. from the host language runtime) used as a fallback when x509.SystemCertPool()
@@ -53,10 +63,14 @@ var sharedCoreFallbackRootCAPEM atomic.Value
 // Internal Use Only.
 func SetSharedCoreFallbackRootCAPEM(pem string) {
 	sharedCoreFallbackRootCAPEM.Store(pem)
+	if pem != "" {
+		_ = resolveInMemoryFallbackRootCAs(pem)
+	}
 }
 
 // SharedCoreLogFunc receives log messages emitted by the Go Spanner transport layer
 // so that host language bindings (e.g. Node.js) can route them into their unified logger.
+// Implementations must be safe for concurrent calls from multiple goroutines.
 //
 // Internal Use Only.
 type SharedCoreLogFunc func(level string, message string)
@@ -88,7 +102,8 @@ type SharedCoreTransportConfig struct {
 	UniverseDomain string
 	// RootCAPEM is an optional PEM-encoded root CA bundle used in memory when the OS system cert pool is empty.
 	RootCAPEM string
-	// NumChannels is the number of gRPC channels in the connection pool (defaults to 4).
+	// NumChannels is the number of gRPC channels in the static connection pool (defaults to 4).
+	// Ignored when DynamicChannelPoolConfig.DCPEnabled is true.
 	NumChannels int
 	// DynamicChannelPoolConfig is the opt-in configuration for dynamic gRPC channel pooling,
 	// matching ClientConfig.DynamicChannelPoolConfig (DCPEnabled defaults to false).
@@ -96,15 +111,17 @@ type SharedCoreTransportConfig struct {
 	// Compression specifies the gRPC compressor ("gzip" or "identity").
 	Compression string
 	// EnableDirectAccess enables DirectPath XDS and ALTS bound tokens.
+	// When GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS is set in the process-start environment,
+	// its strconv.ParseBool value overrides this field (matching ClientConfig.EnableDirectAccess).
 	EnableDirectAccess bool
-	// UserAgent is an optional user-agent suffix (e.g. "gl-node/22.23.3").
+	// UserAgent is an optional user-agent product token in "name/version" format (e.g. "my-lib/1.0.0").
 	UserAgent string
 	// PlainText forces insecure transport credentials (e.g. for local mock servers or emulator).
 	PlainText bool
 	// DisableBuiltInAuth skips default Google ADC authentication when credentials
 	// are supplied per-request via outgoing gRPC metadata from the host language.
 	DisableBuiltInAuth bool
-	// LogFunc is an optional callback for transport log messages.
+	// LogFunc is an optional callback for transport log messages. Must be safe for concurrent calls.
 	LogFunc SharedCoreLogFunc
 	// ClientOptions allows passing additional option.ClientOption values (e.g. in tests).
 	ClientOptions []option.ClientOption
@@ -115,24 +132,70 @@ type SharedCoreTransportConfig struct {
 //
 // Internal Use Only.
 type SharedCoreTransport struct {
-	closed       atomic.Bool
-	sc           *sessionClient
-	clients      []spannerClient
-	logger       *log.Logger
-	rrCounter    atomic.Uint32
-	lastPrimedMD atomic.Pointer[metadata.MD]
+	closed    atomic.Bool
+	sc        *sessionClient
+	clients   []spannerClient
+	logger    *log.Logger
+	rrCounter atomic.Uint32
+}
+
+type sharedCoreSettings struct {
+	numCh                int
+	hasNumChannelsConfig bool
+	schemeRemoved        string
+	useEmulator          bool
+	isPlain              bool
+	isDirectPathEnabled  bool
+	isFallbackEnabled    bool
+	useDCP               bool
+}
+
+func resolveSharedCoreSettings(cfg SharedCoreTransportConfig) sharedCoreSettings {
+	hasNumChannelsConfig := cfg.NumChannels > 0
+	numCh := cfg.NumChannels
+	if numCh <= 0 {
+		numCh = numChannels
+	}
+
+	emulatorAddr := os.Getenv("SPANNER_EMULATOR_HOST")
+	targetEndpoint := cfg.Endpoint
+	if targetEndpoint == "" && emulatorAddr != "" {
+		targetEndpoint = emulatorAddr
+	}
+	var schemeRemoved string
+	if targetEndpoint != "" {
+		schemeRemoved = stripEndpointScheme(targetEndpoint)
+	}
+	useEmulator := emulatorAddr != "" && (cfg.Endpoint == "" || cfg.Endpoint == emulatorAddr || schemeRemoved == stripEndpointScheme(emulatorAddr))
+	isPlain := cfg.PlainText || useEmulator
+
+	isDirectPathEnabled := cfg.EnableDirectAccess
+	if enableDirectPathXdsString := os.Getenv("GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS"); enableDirectPathXdsString != "" {
+		isDirectPathEnabled, _ = strconv.ParseBool(enableDirectPathXdsString)
+	}
+	isFallbackEnabled := false
+	if val, ok := os.LookupEnv("GOOGLE_SPANNER_ENABLE_GCP_FALLBACK"); ok {
+		if b, err := strconv.ParseBool(val); err == nil {
+			isFallbackEnabled = b
+		}
+	}
+
+	useDCP := cfg.DynamicChannelPoolConfig.DCPEnabled && !useEmulator
+	return sharedCoreSettings{
+		numCh:                numCh,
+		hasNumChannelsConfig: hasNumChannelsConfig,
+		schemeRemoved:        schemeRemoved,
+		useEmulator:          useEmulator,
+		isPlain:              isPlain,
+		isDirectPathEnabled:  isDirectPathEnabled,
+		isFallbackEnabled:    isFallbackEnabled,
+		useDCP:               useDCP,
+	}
 }
 
 func stripEndpointScheme(ep string) string {
 	ep = strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(ep, "passthrough:///"), "https://"), "http://")
 	return strings.TrimPrefix(ep, "passthrough:///")
-}
-
-func extractTLSServerName(schemeRemoved string) string {
-	if host, _, err := net.SplitHostPort(schemeRemoved); err == nil && host != "" {
-		return host
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(schemeRemoved, "["), "]")
 }
 
 func buildSharedCoreSessionMetadata(compression string) metadata.MD {
@@ -143,29 +206,8 @@ func buildSharedCoreSessionMetadata(compression string) metadata.MD {
 	return md
 }
 
-func resolveSharedCoreUniverseDomain(cfgUniverseDomain, schemeRemoved string) string {
-	universeDomain := strings.TrimSpace(cfgUniverseDomain)
-	if universeDomain == "" {
-		universeDomain = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_UNIVERSE_DOMAIN"))
-	}
-	if universeDomain == "" && strings.HasPrefix(schemeRemoved, "spanner.") && strings.HasSuffix(schemeRemoved, ":443") {
-		candidate := strings.TrimSuffix(strings.TrimPrefix(schemeRemoved, "spanner."), ":443")
-		if candidate != "" &&
-			candidate != "googleapis.com" &&
-			!strings.HasSuffix(candidate, ".googleapis.com") &&
-			!strings.HasPrefix(candidate, "mtls.") &&
-			!strings.Contains(candidate, ".rep.") {
-			universeDomain = candidate
-		}
-	}
-	if universeDomain == "googleapis.com" {
-		return ""
-	}
-	return universeDomain
-}
-
 func resolveInMemoryFallbackRootCAs(explicitPEM string) *x509.CertPool {
-	if sysPool, err := x509.SystemCertPool(); err == nil && sysPool != nil && !sysPool.Equal(x509.NewCertPool()) {
+	if sysPool, err := systemCertPool(); err == nil && sysPool != nil && !sysPool.Equal(x509.NewCertPool()) {
 		return nil
 	}
 	pemData := explicitPEM
@@ -181,10 +223,11 @@ func resolveInMemoryFallbackRootCAs(explicitPEM string) *x509.CertPool {
 	if !pool.AppendCertsFromPEM([]byte(pemData)) {
 		return nil
 	}
+	safeSetFallbackRoots(pool)
 	return pool
 }
 
-func applyDCPPrimeMetadata(uCtx context.Context, rawReq any, baseMD metadata.MD) context.Context {
+func applyDCPPrimeMetadata(uCtx context.Context, rawReq any) context.Context {
 	req, ok := rawReq.(*sppb.ExecuteSqlRequest)
 	if !ok {
 		return uCtx
@@ -197,36 +240,35 @@ func applyDCPPrimeMetadata(uCtx context.Context, rawReq any, baseMD metadata.MD)
 	dbPrefix := sess[:idx]
 	md, ok := metadata.FromOutgoingContext(uCtx)
 	if ok {
+		if len(md.Get(resourcePrefixHeader)) > 0 {
+			return uCtx
+		}
 		md = md.Copy()
 	} else {
 		md = metadata.MD{}
 	}
-	for k, vals := range baseMD {
-		if k != "google-cloud-resource-prefix" && k != "x-goog-request-params" && k != xSpannerRequestIDHeader {
-			if len(md.Get(k)) == 0 {
-				md[k] = vals
-			}
-		}
-	}
-	if len(md.Get("google-cloud-resource-prefix")) == 0 {
-		md.Set("google-cloud-resource-prefix", dbPrefix)
-	}
+	md.Set(resourcePrefixHeader, dbPrefix)
 	return metadata.NewOutgoingContext(uCtx, md)
+}
+
+func (t *SharedCoreTransport) updateDCPPrimeSession(sessionStr string) {
+	if t.sc == nil || t.sc.dynamicPool == nil || !strings.Contains(sessionStr, "/sessions/") {
+		return
+	}
+	if prev, _ := t.sc.dynamicPool.primeSession.Load().(string); prev != sessionStr {
+		t.sc.dynamicPool.setPrimeSession(sessionStr)
+	}
 }
 
 func buildSharedCoreClientOptions(
 	cfg SharedCoreTransportConfig,
-	transport *SharedCoreTransport,
-	schemeRemoved string,
-	isPlainOrLoopback bool,
-	isDirectPathEnabled bool,
-	useDCP bool,
+	settings sharedCoreSettings,
 ) []option.ClientOption {
 	var opts []option.ClientOption
-	if useDCP {
+	if settings.useDCP {
 		// Unary interceptor for DCP priming (ExecuteSql "SELECT 1"): derives the
 		// google-cloud-resource-prefix header directly from the ExecuteSqlRequest.Session
-		// being primed and attaches any non-prefix metadata without mutating sc.md.
+		// being primed without mutating sc.md.
 		primeUnaryInterceptor := func(
 			uCtx context.Context,
 			method string,
@@ -235,14 +277,43 @@ func buildSharedCoreClientOptions(
 			invoker grpc.UnaryInvoker,
 			callOpts ...grpc.CallOption,
 		) error {
-			var baseMD metadata.MD
-			if loaded := transport.lastPrimedMD.Load(); loaded != nil {
-				baseMD = *loaded
-			}
-			uCtx = applyDCPPrimeMetadata(uCtx, rawReq, baseMD)
+			uCtx = applyDCPPrimeMetadata(uCtx, rawReq)
 			return invoker(uCtx, method, rawReq, rawReply, cc, callOpts...)
 		}
 		opts = append(opts, option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(primeUnaryInterceptor)))
+	}
+
+	if cfg.Compression == gzip.Name {
+		gzipUnaryInterceptor := func(
+			uCtx context.Context,
+			method string,
+			rawReq, rawReply any,
+			cc *grpc.ClientConn,
+			invoker grpc.UnaryInvoker,
+			callOpts ...grpc.CallOption,
+		) error {
+			if md, ok := metadata.FromOutgoingContext(uCtx); !ok || len(md.Get(requestsCompressionHeader)) == 0 {
+				uCtx = metadata.AppendToOutgoingContext(uCtx, requestsCompressionHeader, gzip.Name)
+			}
+			return invoker(uCtx, method, rawReq, rawReply, cc, callOpts...)
+		}
+		gzipStreamInterceptor := func(
+			sCtx context.Context,
+			desc *grpc.StreamDesc,
+			cc *grpc.ClientConn,
+			method string,
+			streamer grpc.Streamer,
+			callOpts ...grpc.CallOption,
+		) (grpc.ClientStream, error) {
+			if md, ok := metadata.FromOutgoingContext(sCtx); !ok || len(md.Get(requestsCompressionHeader)) == 0 {
+				sCtx = metadata.AppendToOutgoingContext(sCtx, requestsCompressionHeader, gzip.Name)
+			}
+			return streamer(sCtx, desc, cc, method, callOpts...)
+		}
+		opts = append(opts,
+			option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(gzipUnaryInterceptor)),
+			option.WithGRPCDialOption(grpc.WithChainStreamInterceptor(gzipStreamInterceptor)),
+		)
 	}
 
 	opts = append(opts,
@@ -252,38 +323,38 @@ func buildSharedCoreClientOptions(
 		)),
 	)
 
-	if isPlainOrLoopback {
-		if schemeRemoved != "" {
-			opts = append(opts, option.WithEndpoint("passthrough:///"+schemeRemoved))
+	if settings.isPlain {
+		if settings.schemeRemoved != "" {
+			opts = append(opts, option.WithEndpoint("passthrough:///"+settings.schemeRemoved))
 		}
 		opts = append(opts,
 			option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
 			option.WithoutAuthentication(),
 			internaloption.SkipDialSettingsValidation(),
 		)
-	} else if schemeRemoved != "" {
-		opts = append(opts, option.WithEndpoint(schemeRemoved))
+	} else if settings.schemeRemoved != "" {
+		opts = append(opts, option.WithEndpoint(settings.schemeRemoved))
 	}
 
-	if !isPlainOrLoopback {
-		if universeDomain := resolveSharedCoreUniverseDomain(cfg.UniverseDomain, schemeRemoved); universeDomain != "" {
-			opts = append(opts, option.WithUniverseDomain(universeDomain))
+	if !settings.isPlain {
+		if ud := strings.TrimSpace(cfg.UniverseDomain); ud != "" {
+			opts = append(opts, option.WithUniverseDomain(ud))
 		}
 	}
 
-	if cfg.DisableBuiltInAuth && !isPlainOrLoopback {
+	if cfg.DisableBuiltInAuth && !settings.isPlain {
 		opts = append(opts,
 			option.WithoutAuthentication(),
 			internaloption.SkipDialSettingsValidation(),
 		)
 	}
 
-	if !isPlainOrLoopback && (!isDirectPathEnabled || cfg.DisableBuiltInAuth) {
-		if fallbackPool := resolveInMemoryFallbackRootCAs(cfg.RootCAPEM); fallbackPool != nil {
+	if !settings.isPlain {
+		fallbackPool := resolveInMemoryFallbackRootCAs(cfg.RootCAPEM)
+		if fallbackPool != nil && (!settings.isDirectPathEnabled || cfg.DisableBuiltInAuth) {
 			opts = append(opts,
 				option.WithGRPCDialOption(grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
-					RootCAs:    fallbackPool,
-					ServerName: extractTLSServerName(schemeRemoved),
+					RootCAs: fallbackPool,
 				}))),
 			)
 		}
@@ -298,8 +369,7 @@ func initSharedCoreDCPTransport(
 	transport *SharedCoreTransport,
 	logger *log.Logger,
 	metricsTracerFactory *builtinMetricsTracerFactory,
-	isDirectPathEnabled bool,
-	isPlainOrLoopback bool,
+	settings sharedCoreSettings,
 	opts []option.ClientOption,
 ) (*SharedCoreTransport, error) {
 	dcpOpts := append([]option.ClientOption{}, opts...)
@@ -310,7 +380,7 @@ func initSharedCoreDCPTransport(
 		ClientConfig{
 			UserAgent:                  cfg.UserAgent,
 			Compression:                cfg.Compression,
-			EnableDirectAccess:         isDirectPathEnabled,
+			EnableDirectAccess:         settings.isDirectPathEnabled,
 			DynamicChannelPoolConfig:   cfg.DynamicChannelPoolConfig,
 			BatchTimeout:               time.Minute,
 			Logger:                     logger,
@@ -327,7 +397,7 @@ func initSharedCoreDCPTransport(
 
 	// Kick off non-blocking background TCP/TLS/ALPN handshakes across all initial
 	// DCP entries when connecting to a remote non-plaintext endpoint.
-	if !isPlainOrLoopback && sc.dynamicPool != nil {
+	if !settings.isPlain && sc.dynamicPool != nil {
 		for _, e := range sc.dynamicPool.getEntries() {
 			if e.pool != nil {
 				if conn := e.pool.Conn(); conn != nil {
@@ -347,27 +417,23 @@ func initSharedCoreStaticTransport(
 	transport *SharedCoreTransport,
 	logger *log.Logger,
 	metricsTracerFactory *builtinMetricsTracerFactory,
-	numCh int,
-	hasNumChannelsConfig bool,
-	isDirectPathEnabled bool,
-	isFallbackEnabled bool,
-	isPlainOrLoopback bool,
+	settings sharedCoreSettings,
 	opts []option.ClientOption,
 ) (*SharedCoreTransport, error) {
 	var (
 		connPool gtransport.ConnPool
 		err      error
 	)
-	if isFallbackEnabled && isDirectPathEnabled && !isPlainOrLoopback && !cfg.DisableBuiltInAuth {
+	if settings.isFallbackEnabled && settings.isDirectPathEnabled && !settings.isPlain && !cfg.DisableBuiltInAuth {
 		// createFallbackConnPool adds its own requestIDHeaderInjector stream and unary interceptors.
 		connPool, _, err = createFallbackConnPool(
 			ctx,
 			ClientConfig{
-				NumChannels:        numCh,
+				NumChannels:        settings.numCh,
 				Compression:        cfg.Compression,
-				EnableDirectAccess: isDirectPathEnabled,
+				EnableDirectAccess: settings.isDirectPathEnabled,
 			},
-			hasNumChannelsConfig,
+			settings.hasNumChannelsConfig,
 			metricsTracerFactory,
 			opts...,
 		)
@@ -381,14 +447,15 @@ func initSharedCoreStaticTransport(
 			option.WithGRPCDialOption(grpc.WithChainStreamInterceptor(reqIDInjector.interceptStream)),
 			option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(reqIDInjector.interceptUnary)),
 		)
-		allOpts := allClientOpts(numCh, cfg.Compression, isDirectPathEnabled, staticOpts...)
-		if hasNumChannelsConfig {
-			allOpts = append(allOpts, option.WithGRPCConnectionPool(numCh))
-		}
+		allOpts := allClientOpts(settings.numCh, cfg.Compression, settings.isDirectPathEnabled, staticOpts...)
 
 		connPool, err = gtransport.DialPool(ctx, allOpts...)
 		if err != nil {
 			return nil, ToSpannerError(err)
+		}
+		if settings.hasNumChannelsConfig && connPool.Num() != settings.numCh {
+			_ = connPool.Close()
+			return nil, spannerErrorf(codes.InvalidArgument, "Connection pool size cannot be specified by both NumChannels=%v and WithGRPCConnectionPool=%v", settings.numCh, connPool.Num())
 		}
 	}
 
@@ -408,7 +475,7 @@ func initSharedCoreStaticTransport(
 
 	actualPoolSize := connPool.Num()
 	if actualPoolSize <= 0 {
-		actualPoolSize = numCh
+		actualPoolSize = settings.numCh
 	}
 
 	clients := make([]spannerClient, actualPoolSize)
@@ -423,7 +490,7 @@ func initSharedCoreStaticTransport(
 
 	// Kick off non-blocking background TCP/TLS/ALPN handshakes across all pooled
 	// gRPC channels when connecting to a remote non-plaintext endpoint.
-	if !isPlainOrLoopback {
+	if !settings.isPlain {
 		for conn := range sc.channelIDMap {
 			if conn != nil {
 				conn.Connect()
@@ -438,15 +505,11 @@ func initSharedCoreStaticTransport(
 
 // NewSharedCoreTransport initializes a new SharedCoreTransport backed by Go Spanner's
 // dynamicChannelPool, allClientOpts, gtransport.DialPool, requestIDHeaderInjector, and grpcSpannerClient.
+// When cfg.DynamicChannelPoolConfig.DCPEnabled is true, ctx also governs the lifetime of
+// background DCP channel maintenance and autoscaling goroutines until Close is called.
 //
 // Internal Use Only.
 func NewSharedCoreTransport(ctx context.Context, cfg SharedCoreTransportConfig) (*SharedCoreTransport, error) {
-	hasNumChannelsConfig := cfg.NumChannels > 0
-	numCh := cfg.NumChannels
-	if numCh <= 0 {
-		numCh = numChannels
-	}
-
 	var logger *log.Logger
 	if cfg.LogFunc != nil {
 		logger = log.New(&sharedCoreLogWriter{logFn: cfg.LogFunc}, "", 0)
@@ -456,48 +519,22 @@ func NewSharedCoreTransport(ctx context.Context, cfg SharedCoreTransportConfig) 
 		logger: logger,
 	}
 
-	emulatorAddr := os.Getenv("SPANNER_EMULATOR_HOST")
-	targetEndpoint := cfg.Endpoint
-	if targetEndpoint == "" && emulatorAddr != "" {
-		targetEndpoint = emulatorAddr
-	}
-	var schemeRemoved string
-	if targetEndpoint != "" {
-		schemeRemoved = stripEndpointScheme(targetEndpoint)
-	}
-	useEmulator := emulatorAddr != "" && (cfg.Endpoint == "" || cfg.Endpoint == emulatorAddr || schemeRemoved == stripEndpointScheme(emulatorAddr))
-	isPlainOrLoopback := cfg.PlainText || useEmulator || isLoopbackEndpoint(schemeRemoved)
-
-	isDirectPathEnabled := cfg.EnableDirectAccess
-	if enableDirectPathXdsString := os.Getenv("GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS"); enableDirectPathXdsString != "" {
-		if b, err := strconv.ParseBool(enableDirectPathXdsString); err == nil {
-			isDirectPathEnabled = b
-		}
-	}
-	isFallbackEnabled := false
-	if val, ok := os.LookupEnv("GOOGLE_SPANNER_ENABLE_GCP_FALLBACK"); ok {
-		if b, err := strconv.ParseBool(val); err == nil {
-			isFallbackEnabled = b
-		}
-	}
-
-	useDCP := cfg.DynamicChannelPoolConfig.DCPEnabled && !useEmulator
-	opts := buildSharedCoreClientOptions(cfg, transport, schemeRemoved, isPlainOrLoopback, isDirectPathEnabled, useDCP)
+	settings := resolveSharedCoreSettings(cfg)
+	opts := buildSharedCoreClientOptions(cfg, settings)
 
 	metricsTracerFactory := &builtinMetricsTracerFactory{
 		enabled:  false,
 		shutdown: func(context.Context) {},
 	}
 
-	if useDCP {
+	if settings.useDCP {
 		return initSharedCoreDCPTransport(
 			ctx,
 			cfg,
 			transport,
 			logger,
 			metricsTracerFactory,
-			isDirectPathEnabled,
-			isPlainOrLoopback,
+			settings,
 			opts,
 		)
 	}
@@ -508,19 +545,9 @@ func NewSharedCoreTransport(ctx context.Context, cfg SharedCoreTransportConfig) 
 		transport,
 		logger,
 		metricsTracerFactory,
-		numCh,
-		hasNumChannelsConfig,
-		isDirectPathEnabled,
-		isFallbackEnabled,
-		isPlainOrLoopback,
+		settings,
 		opts,
 	)
-}
-
-func isLoopbackEndpoint(ep string) bool {
-	return strings.HasPrefix(ep, "localhost:") ||
-		strings.HasPrefix(ep, "127.0.0.1:") ||
-		strings.HasPrefix(ep, "[::1]:")
 }
 
 // pickClient selects a spannerClient from the pool. When backed by dynamicChannelPool,
