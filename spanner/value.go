@@ -4543,6 +4543,9 @@ func errNotStructElement(i int, v *proto3.Value) error {
 // decodeRowArray decodes proto3.ListValue pb into a NullRow slice according to
 // the structural information given in sppb.StructType ty.
 func decodeRowArray(ty *sppb.StructType, pb *proto3.ListValue) ([]NullRow, error) {
+	if ty == nil {
+		return nil, errNilSpannerStructType()
+	}
 	if pb == nil {
 		return nil, errNilListValue("STRUCT")
 	}
