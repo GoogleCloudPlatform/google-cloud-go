@@ -313,7 +313,7 @@ func (p *SessionPoolImpl) CheckoutSession(ctx context.Context) (*SessionHandle, 
 			// Remove from queue so a subsequent free-session wake
 			// doesn't burn on a caller that's already given up.
 			p.removeWaiter(w)
-			return nil, fmt.Errorf("%w: %w", ErrNoSessionsAvailable, ctx.Err())
+			return nil, tagErr(StateUncommitted, fmt.Errorf("%w: %w", ErrNoSessionsAvailable, ctx.Err()))
 		case <-w.ready:
 			p.waitersCount.Add(-1)
 			// A poisoned wake (drainWaitersWithErr) sets w.err before
