@@ -317,7 +317,7 @@ func Run(name string, op Opener) {
 					defer wg.Done()
 					seq := 0
 					for time.Now().Before(deadline) {
-						obj := fmt.Sprintf("%s/bidiwrite48/w%d-%d", *prefix, w, seq)
+						obj := fmt.Sprintf("%s/bidiwrite48/w%d-%d", *prefix, w, seq%4)
 						seq++
 						t := time.Now()
 						if err := ext.WriteObject(ctx, *bucket, obj, payload); err != nil {
