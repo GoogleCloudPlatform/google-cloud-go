@@ -103,6 +103,16 @@
 
 ---
 
+### Visual Comparison Graphs (Native Go vs. Go→UDS→Rust)
+
+![Graph 1: Throughput & Latency Across Workloads and Buckets](./docs/graph1_throughput_latency_comparison.png)
+
+![Graph 2: CPU Efficiency & Zero-Copy Shared Memory (memfd)](./docs/graph2_cpu_and_shm_zerocopy.png)
+
+![Graph 3: Memory Footprint (Peak RSS) & Cloud Monitoring VM Telemetry](./docs/graph3_memory_and_vm_telemetry.png)
+
+---
+
 ## 4. Repository Layout
 
 - `gcs_uds/proto/gcscore.proto` — the local IPC contract (`Ping`, `ReadObject`,

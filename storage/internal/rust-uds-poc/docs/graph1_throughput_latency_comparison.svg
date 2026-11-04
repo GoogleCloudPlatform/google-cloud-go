@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="525" viewBox="0 0 1400 525">
+  <rect width="1400" height="525" fill="#FFFFFF"/>
+  <text x="700" y="30" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="bold" fill="#202124">Graph 1: Native Go vs. Go-&gt;UDS-&gt;Rust — Throughput &amp; Latency Across Workloads and Buckets (c4-standard-192)</text>
+  <line x1="635" y1="55" x2="635" y2="480" stroke="#E0E0E0" stroke-width="1"/>
+  <text x="320.0" y="72" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202124">A. Sustained 48-Thread Throughput (MiB/s, Higher is Better)</text>
+<rect x="73" y="86" width="13" height="13" rx="2" fill="#1A73E8"/>
+<text x="91" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Native Go SDK (gRPC)</text>
+<rect x="229.0" y="86" width="13" height="13" rx="2" fill="#00897B"/>
+<text x="247.0" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Go-&gt;UDS-&gt;Rust Sidecar</text>
+<line x1="79" y1="423.0" x2="609" y2="423.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="427.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">0</text>
+<line x1="79" y1="359.5" x2="609" y2="359.5" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="363.5" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">1,000</text>
+<line x1="79" y1="295.9" x2="609" y2="295.9" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="299.9" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">2,000</text>
+<line x1="79" y1="232.4" x2="609" y2="232.4" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="236.4" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">3,000</text>
+<line x1="79" y1="168.8" x2="609" y2="168.8" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="172.8" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">4,000</text>
+<line x1="79" y1="118" x2="79" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<line x1="79" y1="423" x2="609" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<text x="33" y="270.5" text-anchor="middle" font-family="sans-serif" font-size="11.5" font-weight="bold" fill="#3C4043" transform="rotate(-90 33 270.5)">Aggregate Throughput (MiB/s)</text>
+<rect x="143.5" y="336.7" width="54.0" height="86.3" rx="2" fill="#1A73E8"/>
+<text x="170.5" y="318.7" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">1,358 MiB/s</text>
+<text x="170.5" y="330.7" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">(2.88% CPU)</text>
+<rect x="225.5" y="337.3" width="54.0" height="85.7" rx="2" fill="#00897B"/>
+<text x="252.5" y="319.3" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">1,349 MiB/s</text>
+<text x="252.5" y="331.3" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">(99.3% Parity)</text>
+<text x="211.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W4: BidiRead 48t (5m)</text>
+<text x="211.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">Regional us-west1 (gRPC)</text>
+<rect x="408.5" y="159.1" width="54.0" height="263.9" rx="2" fill="#1A73E8"/>
+<text x="435.5" y="141.1" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">4,153 MiB/s</text>
+<text x="435.5" y="153.1" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">(BidiWrite)</text>
+<rect x="490.5" y="333.9" width="54.0" height="89.1" rx="2" fill="#D93025"/>
+<text x="517.5" y="315.9" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#D93025">1,402 MiB/s</text>
+<text x="517.5" y="327.9" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#D93025">(JSON fallback*)</text>
+<text x="476.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W5: Write 200MiB 48t (5m)</text>
+<text x="476.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">Regional us-west1</text>
+  <text x="1015.0" y="72" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202124">B. P50 Latency Across Workloads &amp; Buckets (ms, Lower is Better)</text>
+<rect x="703" y="86" width="13" height="13" rx="2" fill="#1A73E8"/>
+<text x="721" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Native Go SDK</text>
+<rect x="813.5" y="86" width="13" height="13" rx="2" fill="#00897B"/>
+<text x="831.5" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Go-&gt;UDS-&gt;Rust (Red = Regional JSON fallback)</text>
+<line x1="709" y1="423.0" x2="1369" y2="423.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="701" y="427.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">0</text>
+<line x1="709" y1="366.5" x2="1369" y2="366.5" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="701" y="370.5" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">1,000</text>
+<line x1="709" y1="310.0" x2="1369" y2="310.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="701" y="314.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">2,000</text>
+<line x1="709" y1="253.6" x2="1369" y2="253.6" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="701" y="257.6" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">3,000</text>
+<line x1="709" y1="197.1" x2="1369" y2="197.1" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="701" y="201.1" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">4,000</text>
+<line x1="709" y1="140.6" x2="1369" y2="140.6" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="701" y="144.6" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">5,000</text>
+<line x1="709" y1="118" x2="709" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<line x1="709" y1="423" x2="1369" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<text x="663" y="270.5" text-anchor="middle" font-family="sans-serif" font-size="11.5" font-weight="bold" fill="#3C4043" transform="rotate(-90 663 270.5)">P50 Latency (ms)</text>
+<rect x="725.0" y="411.3" width="36.0" height="11.7" rx="2" fill="#1A73E8"/>
+<text x="743.0" y="405.3" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">208ms</text>
+<rect x="767.0" y="410.8" width="36.0" height="12.2" rx="2" fill="#00897B"/>
+<text x="785.0" y="404.8" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">215ms</text>
+<text x="764.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W1: open</text>
+<text x="764.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Reg gRPC)</text>
+<rect x="835.0" y="410.7" width="36.0" height="12.3" rx="2" fill="#1A73E8"/>
+<text x="853.0" y="404.7" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">218ms</text>
+<rect x="877.0" y="418.0" width="36.0" height="5.0" rx="2" fill="#00897B"/>
+<text x="895.0" y="412.0" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">89ms</text>
+<text x="874.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W6a: list-100</text>
+<text x="874.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Reg gRPC)</text>
+<rect x="945.0" y="340.5" width="36.0" height="82.5" rx="2" fill="#1A73E8"/>
+<text x="963.0" y="334.5" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">1460ms</text>
+<rect x="987.0" y="344.5" width="36.0" height="78.5" rx="2" fill="#00897B"/>
+<text x="1005.0" y="338.5" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">1,390ms</text>
+<text x="984.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">128MiB Read</text>
+<text x="984.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Reg JSON)</text>
+<rect x="1055.0" y="400.2" width="36.0" height="22.8" rx="2" fill="#1A73E8"/>
+<text x="1073.0" y="394.2" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">404ms</text>
+<rect x="1097.0" y="402.0" width="36.0" height="21.0" rx="2" fill="#00897B"/>
+<text x="1115.0" y="396.0" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">372ms</text>
+<text x="1094.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">128MiB Read</text>
+<text x="1094.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Zonal gRPC)</text>
+<rect x="1165.0" y="398.7" width="36.0" height="24.3" rx="2" fill="#1A73E8"/>
+<text x="1183.0" y="392.7" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">430ms</text>
+<rect x="1207.0" y="398.7" width="36.0" height="24.3" rx="2" fill="#00897B"/>
+<text x="1225.0" y="380.7" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">430ms</text>
+<text x="1225.0" y="392.7" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#00897B">(Parity!)</text>
+<text x="1204.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">128MiB Write</text>
+<text x="1204.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Zonal gRPC)</text>
+<rect x="1275.0" y="321.9" width="36.0" height="101.1" rx="2" fill="#1A73E8"/>
+<text x="1293.0" y="315.9" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#1A73E8">1790ms</text>
+<rect x="1317.0" y="156.4" width="36.0" height="266.6" rx="2" fill="#D93025"/>
+<text x="1335.0" y="138.4" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#D93025">4,720ms</text>
+<text x="1335.0" y="150.4" text-anchor="middle" font-family="sans-serif" font-size="9.8" font-weight="bold" fill="#D93025">(JSON*)</text>
+<text x="1314.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">128MiB Write</text>
+<text x="1314.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Reg gRPC*)</text>
+  <text x="700" y="512" text-anchor="middle" font-family="sans-serif" font-size="11" font-style="italic" fill="#5F6368">*Note: On Regional buckets (us-west1), google-cloud-storage 1.21 lacks non-zonal gRPC BidiWriteObject and falls back to buffered JSON write_object. On Zonal buckets (us-central1-a), both use BidiWriteObject with 100% parity (430ms vs 430ms).</text>
+</svg>

@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="525" viewBox="0 0 1400 525">
+  <rect width="1400" height="525" fill="#FFFFFF"/>
+  <text x="700" y="30" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="bold" fill="#202124">Graph 3: Memory Footprint (Peak RSS) &amp; Cloud Monitoring VM Telemetry (Native Go vs. Go-&gt;UDS-&gt;Rust)</text>
+  <line x1="730" y1="55" x2="730" y2="480" stroke="#E0E0E0" stroke-width="1"/>
+  <text x="370.0" y="72" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202124">A. Process Peak RSS Memory (MiB, Log Scale — Lower is Better)</text>
+<rect x="73" y="86" width="13" height="13" rx="2" fill="#1A73E8"/>
+<text x="91" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Native Go SDK</text>
+<rect x="183.5" y="86" width="13" height="13" rx="2" fill="#00897B"/>
+<text x="201.5" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Go Thin + Rust Sidecar</text>
+<line x1="79" y1="413.1" x2="709" y2="413.1" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="417.1" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">50</text>
+<line x1="79" y1="382.5" x2="709" y2="382.5" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="386.5" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">100</text>
+<line x1="79" y1="311.5" x2="709" y2="311.5" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="315.5" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">500</text>
+<line x1="79" y1="280.9" x2="709" y2="280.9" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="284.9" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">1,000</text>
+<line x1="79" y1="209.8" x2="709" y2="209.8" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="213.8" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">5,000</text>
+<line x1="79" y1="148.6" x2="709" y2="148.6" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="71" y="152.6" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">20,000</text>
+<line x1="79" y1="118" x2="79" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<line x1="79" y1="423" x2="709" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<text x="33" y="270.5" text-anchor="middle" font-family="sans-serif" font-size="11.5" font-weight="bold" fill="#3C4043" transform="rotate(-90 33 270.5)">Peak RSS (MiB, Log Scale)</text>
+<rect x="91.7" y="387.9" width="37.8" height="35.1" rx="2" fill="#1A73E8"/>
+<text x="110.6" y="381.9" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">88M</text>
+<rect x="133.5" y="393.8" width="37.8" height="29.2" rx="2" fill="#00897B"/>
+<text x="152.4" y="387.8" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">78M</text>
+<text x="131.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W1: open</text>
+<text x="131.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(200MiB)</text>
+<rect x="196.7" y="341.3" width="37.8" height="81.7" rx="2" fill="#1A73E8"/>
+<text x="215.6" y="335.3" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">254M</text>
+<rect x="238.5" y="328.3" width="37.8" height="94.7" rx="2" fill="#00897B"/>
+<text x="257.4" y="322.3" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">342M</text>
+<text x="236.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W2b: read50x2x4</text>
+<text x="236.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Concurrent)</text>
+<rect x="301.7" y="307.9" width="37.8" height="115.1" rx="2" fill="#1A73E8"/>
+<text x="320.6" y="301.9" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">542M</text>
+<rect x="343.5" y="300.7" width="37.8" height="122.3" rx="2" fill="#00897B"/>
+<text x="362.4" y="294.7" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">639M</text>
+<text x="341.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">128MiB W1R3</text>
+<text x="341.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Whole, gRPC)</text>
+<rect x="406.7" y="261.8" width="37.8" height="161.2" rx="2" fill="#1A73E8"/>
+<text x="425.6" y="255.8" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">1,540M</text>
+<rect x="448.5" y="262.1" width="37.8" height="160.9" rx="2" fill="#00897B"/>
+<text x="467.4" y="244.1" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">1,530M</text>
+<text x="467.4" y="256.1" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">(Parity!)</text>
+<text x="446.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">512MiB Write</text>
+<text x="446.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Zonal gRPC)</text>
+<rect x="511.7" y="253.6" width="37.8" height="169.4" rx="2" fill="#1A73E8"/>
+<text x="530.6" y="247.6" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">1,855M</text>
+<rect x="553.5" y="235.1" width="37.8" height="187.9" rx="2" fill="#00897B"/>
+<text x="572.4" y="229.1" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">2,822M</text>
+<text x="551.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W4: BidiRead</text>
+<text x="551.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(48t, 5m)</text>
+<rect x="616.7" y="240.4" width="37.8" height="182.6" rx="2" fill="#1A73E8"/>
+<text x="635.6" y="234.4" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">2,499M</text>
+<rect x="658.5" y="152.1" width="37.8" height="270.9" rx="2" fill="#D93025"/>
+<text x="677.4" y="134.1" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#D93025">18,490M</text>
+<text x="677.4" y="146.1" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#D93025">(JSON buf*)</text>
+<text x="656.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W5: Write 48t</text>
+<text x="656.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">(Reg JSON*)</text>
+  <text x="1062.5" y="72" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202124">B. Cloud Monitoring VM Utilization (%) on c4-standard-192 (48 Threads, 5m)</text>
+<rect x="798" y="86" width="13" height="13" rx="2" fill="#1A73E8"/>
+<text x="816" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Native Go SDK (gRPC)</text>
+<rect x="954.0" y="86" width="13" height="13" rx="2" fill="#00897B"/>
+<text x="972.0" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Go-&gt;UDS-&gt;Rust Sidecar</text>
+<line x1="804" y1="423.0" x2="1369" y2="423.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="796" y="427.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">0</text>
+<line x1="804" y1="362.0" x2="1369" y2="362.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="796" y="366.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">1</text>
+<line x1="804" y1="301.0" x2="1369" y2="301.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="796" y="305.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">2</text>
+<line x1="804" y1="240.0" x2="1369" y2="240.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="796" y="244.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">3</text>
+<line x1="804" y1="179.0" x2="1369" y2="179.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="796" y="183.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">4</text>
+<line x1="804" y1="118.0" x2="1369" y2="118.0" stroke="#E8EAED" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="796" y="122.0" text-anchor="end" font-family="sans-serif" font-size="11" fill="#5F6368">5</text>
+<line x1="804" y1="118" x2="804" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<line x1="804" y1="423" x2="1369" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
+<text x="758" y="270.5" text-anchor="middle" font-family="sans-serif" font-size="11.5" font-weight="bold" fill="#3C4043" transform="rotate(-90 758 270.5)">VM Resource Utilization (%)</text>
+<rect x="834.6" y="247.3" width="38.0" height="175.7" rx="2" fill="#1A73E8"/>
+<text x="853.6" y="241.3" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">2.88%</text>
+<rect x="876.6" y="216.2" width="38.0" height="206.8" rx="2" fill="#00897B"/>
+<text x="895.6" y="210.2" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">3.39%</text>
+<text x="874.6" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W4: BidiRead 48t</text>
+<text x="874.6" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">VM CPU % (avg)</text>
+<rect x="975.9" y="363.8" width="38.0" height="59.2" rx="2" fill="#1A73E8"/>
+<text x="994.9" y="357.8" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">0.97%</text>
+<rect x="1017.9" y="334.6" width="38.0" height="88.4" rx="2" fill="#00897B"/>
+<text x="1036.9" y="328.6" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">1.45%</text>
+<text x="1015.9" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W4: BidiRead 48t</text>
+<text x="1015.9" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">VM Memory % (used)</text>
+<rect x="1117.1" y="169.2" width="38.0" height="253.8" rx="2" fill="#1A73E8"/>
+<text x="1136.1" y="163.2" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">4.16%</text>
+<rect x="1159.1" y="331.5" width="38.0" height="91.5" rx="2" fill="#00897B"/>
+<text x="1178.1" y="325.5" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#00897B">1.50%</text>
+<text x="1157.1" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W5: Write 48t</text>
+<text x="1157.1" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">VM CPU % (avg)</text>
+<rect x="1258.4" y="340.6" width="38.0" height="82.4" rx="2" fill="#1A73E8"/>
+<text x="1277.4" y="334.6" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#1A73E8">1.35%</text>
+<rect x="1300.4" y="227.2" width="38.0" height="195.8" rx="2" fill="#D93025"/>
+<text x="1319.4" y="209.2" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#D93025">3.21%</text>
+<text x="1319.4" y="221.2" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="bold" fill="#D93025">(18.5 GiB)</text>
+<text x="1298.4" y="441" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">W5: Write 48t</text>
+<text x="1298.4" y="455" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="600" fill="#202124">VM Memory % (used)</text>
+  <text x="700" y="512" text-anchor="middle" font-family="sans-serif" font-size="11" font-style="italic" fill="#5F6368">*Streaming workloads (W4 BidiRead &amp; Zonal BidiWrite) have near-identical RSS; W5 Regional Write spikes to 18.49 GiB (3.21% VM RAM) due to 48 x 200 MiB buffered JSON fallback.</text>
+</svg>
