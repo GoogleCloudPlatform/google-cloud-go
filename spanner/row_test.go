@@ -1676,6 +1676,63 @@ func TestBrokenRow(t *testing.T) {
 				),
 			),
 		},
+		{
+			// Field specifies ARRAY<STRUCT> with 2 fields, but element ListValue only has 1 value.
+			&Row{
+				[]*sppb.StructType_Field{
+					{
+						Name: "Col0",
+						Type: listType(
+							structType(
+								mkField("Col1", intType()),
+								mkField("Col2", intType()),
+							),
+						),
+					},
+				},
+				[]*proto3.Value{listProto(listProto(intProto(1)))},
+			},
+			&[]*struct {
+				Col1 int64
+				Col2 int64
+			}{},
+			errDecodeColumn(
+				0,
+				errDecodeArrayElement(
+					0, listProto(intProto(1)), "STRUCT",
+					errStructFieldsMismatchVals(
+						&sppb.StructType{
+							Fields: []*sppb.StructType_Field{
+								mkField("Col1", intType()),
+								mkField("Col2", intType()),
+							},
+						},
+						listValueProto(intProto(1)),
+					),
+				),
+			),
+		},
+		{
+			// Field specifies ARRAY<STRUCT>, but element ListValue is nil.
+			&Row{
+				[]*sppb.StructType_Field{
+					{
+						Name: "Col0",
+						Type: listType(
+							structType(
+								mkField("Col1", intType()),
+							),
+						),
+					},
+				},
+				[]*proto3.Value{listProto(&proto3.Value{Kind: &proto3.Value_ListValue{}})},
+			},
+			&[]*struct {
+				Col1 int64
+			}{},
+			errDecodeColumn(0, errDecodeArrayElement(0, &proto3.Value{Kind: &proto3.Value_ListValue{}},
+				"STRUCT", errNilListValue("STRUCT"))),
+		},
 	} {
 		if gotErr := test.row.Column(0, test.dst); !testEqual(gotErr, test.wantErr) {
 			t.Errorf("%v: test.row.Column(0) got error %v, want %v", i, gotErr, test.wantErr)
