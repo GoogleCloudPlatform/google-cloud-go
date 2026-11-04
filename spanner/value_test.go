@@ -2135,6 +2135,8 @@ func TestDecodeValueErrors(t *testing.T) {
 		{nullProto(), stringType(), nil},
 		{nullProto(), stringType(), 1},
 		{timeProto(t1), timeType(), &s},
+		{listProto(listProto(intProto(1))), listType(&sppb.Type{Code: sppb.TypeCode_STRUCT}), &[]NullRow{}},
+		{listProto(), listType(&sppb.Type{Code: sppb.TypeCode_STRUCT}), &[]NullRow{}},
 	} {
 		err := decodeValue(test.in, test.t, test.v)
 		if err == nil {

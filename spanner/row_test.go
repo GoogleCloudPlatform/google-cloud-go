@@ -1637,6 +1637,32 @@ func TestBrokenRow(t *testing.T) {
 				"STRUCT", errNilSpannerStructType())),
 		},
 		{
+			// Field specifies ARRAY<STRUCT>, but is having nil StructType.
+			&Row{
+				[]*sppb.StructType_Field{
+					{
+						Name: "Col0", Type: listType(&sppb.Type{Code: sppb.TypeCode_STRUCT}),
+					},
+				},
+				[]*proto3.Value{listProto(listProto(intProto(1), floatProto(2.0), stringProto("3")))},
+			},
+			&[]NullRow{},
+			errDecodeColumn(0, errNilSpannerStructType()),
+		},
+		{
+			// Field specifies empty ARRAY<STRUCT>, but is having nil StructType.
+			&Row{
+				[]*sppb.StructType_Field{
+					{
+						Name: "Col0", Type: listType(&sppb.Type{Code: sppb.TypeCode_STRUCT}),
+					},
+				},
+				[]*proto3.Value{listProto()},
+			},
+			&[]NullRow{},
+			errDecodeColumn(0, errNilSpannerStructType()),
+		},
+		{
 			// Field specifies ARRAY<STRUCT>, but the second struct value is for BOOL type instead of FLOAT64.
 			&Row{
 				[]*sppb.StructType_Field{

@@ -4543,6 +4543,9 @@ func errNotStructElement(i int, v *proto3.Value) error {
 // decodeRowArray decodes proto3.ListValue pb into a NullRow slice according to
 // the structural information given in sppb.StructType ty.
 func decodeRowArray(ty *sppb.StructType, pb *proto3.ListValue) ([]NullRow, error) {
+	if ty == nil {
+		return nil, errNilSpannerStructType()
+	}
 	if pb == nil {
 		return nil, errNilListValue("STRUCT")
 	}
@@ -4718,6 +4721,15 @@ func isPtrStructPtrSlice(t reflect.Type) bool {
 func decodeStructArray(ty *sppb.StructType, pb *proto3.ListValue, ptr interface{}, lenient bool) error {
 	if pb == nil {
 		return errNilListValue("STRUCT")
+	}
+	if ty == nil {
+		for i, pv := range pb.Values {
+			if _, isNull := pv.Kind.(*proto3.Value_NullValue); isNull {
+				continue
+			}
+			return errDecodeArrayElement(i, pv, "STRUCT", errNilSpannerStructType())
+		}
+		return errNilSpannerStructType()
 	}
 	// Type of the struct pointers stored in the slice that ptr points to.
 	ts := reflect.TypeOf(ptr).Elem().Elem()
