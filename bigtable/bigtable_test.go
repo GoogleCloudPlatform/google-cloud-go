@@ -1926,7 +1926,7 @@ func TestExecuteQuery(t *testing.T) {
 				9. RecvMsg - gets EOF
 			*/
 			desc:    "retry on time-based expired query",
-			testTTL: 1100 * time.Millisecond,
+			testTTL: 2000 * time.Millisecond,
 			mockPrepQueryResps: []prepareQueryResp{
 				newPrepareQueryResp(preparedQuery1, colFamAddress), // PrepareStatement
 				newPrepareQueryResp(preparedQuery1, colFamAddress), // From Execute, because expired query
@@ -1934,7 +1934,7 @@ func TestExecuteQuery(t *testing.T) {
 			mockRecvMsgResps: []recvMsgResp{
 				newExecQueryRespFullBatch(true, nil /* sleep */, []string{colFamAddress}),
 				{
-					sleep: ptr(1200 * time.Millisecond),
+					sleep: ptr(2100 * time.Millisecond),
 					err:   status.Error(codes.DeadlineExceeded, "context deadline exceeded"), // retryable
 				},
 				newExecQueryRespFullBatch(true, nil /* sleep */, []string{colFamAddress}),
@@ -2109,6 +2109,23 @@ func TestExecuteQuery(t *testing.T) {
 				[]byte(preparedQuery2),
 			},
 			wantResultRowValues: [][]*btpb.Value{newProtoRowValuesWithKey(colFamAddress)},
+		},
+		{
+			desc: "repeated permanent errors from PrepareQuery during refresh fail ExecuteQuery after burning retry attempts",
+			mockPrepQueryResps: []prepareQueryResp{
+				newPrepareQueryResp(preparedQuery1, colFamAddress),
+				{err: status.Error(codes.PermissionDenied, "permission denied")},
+				{err: status.Error(codes.PermissionDenied, "permission denied")},
+				{err: status.Error(codes.PermissionDenied, "permission denied")},
+				{err: status.Error(codes.PermissionDenied, "permission denied")},
+			},
+			mockRecvMsgResps: []recvMsgResp{
+				{err: aePcfFp},
+			},
+			wantExecReqPrepQuerys: [][]byte{
+				[]byte(preparedQuery1),
+			},
+			wantExecErr: status.Error(codes.PermissionDenied, "permission denied"),
 		},
 	} {
 		mockPrepQueryResps = tc.mockPrepQueryResps
@@ -2711,7 +2728,7 @@ func TestExecuteQuery_PreExpiryBackgroundRefresh(t *testing.T) {
 		case 1:
 			pqr.PreparedQuery = prepResp1.resp.PreparedQuery
 			// Inside the 1s early-expiration window: valid == true, validEarly == false.
-			pqr.ValidUntil = timestamppb.New(time.Now().Add(500 * time.Millisecond))
+			pqr.ValidUntil = timestamppb.New(time.Now().Add(900 * time.Millisecond))
 			pqr.Metadata = prepResp1.resp.Metadata
 			return nil
 		case 2:
@@ -3117,5 +3134,153 @@ func TestExecuteQuery_SynchronousRefreshRespectsCallerCancel(t *testing.T) {
 	}
 	if got := prepCount.Load(); got != 2 {
 		t.Fatalf("PrepareQuery count = %d, want 2", got)
+	}
+}
+
+func TestExecuteQuery_PermanentRefreshErrorAllowsReuse(t *testing.T) {
+	testEnv, err := NewEmulatedEnv(IntegrationTestConfig{})
+	if err != nil {
+		t.Fatalf("NewEmulatedEnv failed: %v", err)
+	}
+	defer testEnv.Close()
+
+	const (
+		plan1 = "plan-1"
+		plan2 = "plan-2"
+	)
+	prepResp1 := newPrepareQueryResp(plan1, colFamAddress)
+	prepResp2 := newPrepareQueryResp(plan2, colFamAddress)
+
+	stPcfFp, _ := status.New(codes.FailedPrecondition, "failed precondition").WithDetails(&errdetails.PreconditionFailure{
+		Violations: []*errdetails.PreconditionFailure_Violation{
+			{
+				Type:        queryExpiredViolationType,
+				Description: "The prepared query has expired.",
+			},
+		},
+	})
+	aePcfFp, _ := apierror.FromError(stPcfFp.Err())
+
+	var prepCount atomic.Int32
+	// Initial prepare (1) + 4 failed refresh attempts in first Execute (2..5) + 1 successful refresh in second Execute (6).
+	const failUntilCall = 1 + maxPlanRefreshRetries + 1
+
+	unaryInterceptor := func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		err := invoker(ctx, method, req, reply, cc, opts...)
+		if _, ok := req.(*btpb.PrepareQueryRequest); !ok {
+			return err
+		}
+		callNum := int(prepCount.Add(1))
+		pqr := reply.(*btpb.PrepareQueryResponse)
+		switch {
+		case callNum == 1:
+			pqr.PreparedQuery = prepResp1.resp.PreparedQuery
+			pqr.ValidUntil = timestamppb.New(time.Now().Add(10 * time.Minute))
+			pqr.Metadata = prepResp1.resp.Metadata
+			return nil
+		case callNum <= failUntilCall:
+			return status.Error(codes.Internal, "transient internal prepare failure")
+		default:
+			pqr.PreparedQuery = prepResp2.resp.PreparedQuery
+			pqr.ValidUntil = timestamppb.New(time.Now().Add(10 * time.Minute))
+			pqr.Metadata = prepResp2.resp.Metadata
+			return nil
+		}
+	}
+
+	var mu sync.Mutex
+	var gotPreparedQueries []string
+
+	streamInterceptor := func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		s, err := streamer(ctx, desc, cc, method, opts...)
+		if err != nil {
+			return nil, err
+		}
+		var step int
+		var reqs []*btpb.ExecuteQueryRequest
+		var resps []recvMsgResp
+		wcs := &wrappedClientStream{
+			ClientStream: s,
+			recvMsgCount: &step,
+			reqRecorder:  &reqs,
+			respPtrs:     &resps,
+		}
+		return &recordedPlanStream{
+			wrappedClientStream: wcs,
+			onSend: func(req *btpb.ExecuteQueryRequest) {
+				mu.Lock()
+				gotPreparedQueries = append(gotPreparedQueries, string(req.PreparedQuery))
+				mu.Unlock()
+				if string(req.PreparedQuery) == plan1 {
+					resps = []recvMsgResp{{err: aePcfFp}}
+				} else {
+					resps = []recvMsgResp{
+						newExecQueryRespFullBatch(true, nil, []string{colFamAddress}),
+						newExecQueryRespResumeToken(),
+						{err: io.EOF},
+					}
+				}
+			},
+		}, nil
+	}
+
+	conn, err := grpc.NewClient(testEnv.server.Addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(unaryInterceptor),
+		grpc.WithStreamInterceptor(streamInterceptor),
+	)
+	if err != nil {
+		t.Fatalf("grpc.NewClient failed: %v", err)
+	}
+	defer conn.Close()
+	// Use a context without deadline on Execute to verify that non-retryable
+	// PrepareQuery errors do not loop forever.
+	ctx := context.Background()
+	client, err := NewClientWithConfig(ctx, testEnv.config.Project, testEnv.config.Instance, disableMetricsConfig, option.WithGRPCConn(conn))
+	if err != nil {
+		t.Fatalf("NewClientWithConfig failed: %v", err)
+	}
+	defer client.Close()
+
+	ps, err := client.PrepareStatement(ctx, "SELECT * FROM users;", nil)
+	if err != nil {
+		t.Fatalf("PrepareStatement: %v", err)
+	}
+	bs, err := ps.Bind(nil)
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	// First Execute call hits PREPARED_QUERY_EXPIRED on plan1, burns all refresh
+	// attempts on codes.Internal, and fails with codes.Internal.
+	err = bs.Execute(ctx, func(rr ResultRow) bool { return true })
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("first Execute err = %v (code %v), want codes.Internal", err, status.Code(err))
+	}
+	if got := int(prepCount.Load()); got != failUntilCall {
+		t.Fatalf("PrepareQuery count after first Execute = %d, want %d", got, failUntilCall)
+	}
+
+	// Second Execute call on the same PreparedStatement must immediately trigger
+	// a new PrepareQuery (without re-sending the expired plan1) and succeed with plan2.
+	rows := 0
+	if err := bs.Execute(ctx, func(rr ResultRow) bool {
+		rows++
+		return true
+	}); err != nil {
+		t.Fatalf("second Execute failed: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("second Execute rows = %d, want 1", rows)
+	}
+	if got := int(prepCount.Load()); got != failUntilCall+1 {
+		t.Fatalf("PrepareQuery count after second Execute = %d, want %d", got, failUntilCall+1)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	wantPlans := []string{plan1, plan2}
+	if !cmp.Equal(gotPreparedQueries, wantPlans) {
+		t.Fatalf("ExecuteQuery sent plans = %v, want %v", gotPreparedQueries, wantPlans)
 	}
 }

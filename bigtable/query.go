@@ -41,6 +41,7 @@ const (
 	queryExpiredViolationType        = "PREPARED_QUERY_EXPIRED"
 	preparedQueryExpireEarlyDuration = time.Second
 	preparedQueryRefreshTimeout      = 30 * time.Second
+	maxPlanRefreshRetries            = 3
 )
 
 // PreparedStatement stores the results of query preparation that can be used to
@@ -76,6 +77,9 @@ type preparedQueryData struct {
 	// A token may become invalid early due to changes in the data being read, but
 	// it provides a guideline to refresh query plans asynchronously.
 	validUntil *timestamppb.Timestamp
+	// expired is set under PreparedStatement.refreshMutex when the server reports
+	// PREPARED_QUERY_EXPIRED for this plan before validUntil has elapsed.
+	expired bool
 
 	Metadata *ResultRowMetadata
 }
@@ -225,7 +229,7 @@ func (ps *PreparedStatement) Metadata() *ResultRowMetadata {
 // valid is true if the prepared query is valid at now, and validEarly is true
 // if the prepared query is valid and has not reached the early expiration threshold.
 func (pqd *preparedQueryData) valid(now time.Time) (valid bool, validEarly bool) {
-	if pqd == nil || pqd.validUntil == nil {
+	if pqd == nil || pqd.expired || pqd.validUntil == nil {
 		return false, false
 	}
 	expireTime := pqd.validUntil.AsTime()
@@ -249,6 +253,9 @@ func (ps *PreparedStatement) planForAttempt(
 
 	ps.refreshMutex.Lock()
 	cur := ps.data
+	if forceRefresh && (usedPlan == nil || cur == usedPlan) && cur != nil {
+		cur.expired = true
+	}
 	valid, validEarly := cur.valid(now)
 
 	if !forceRefresh {
@@ -318,11 +325,11 @@ func (ps *PreparedStatement) startRefreshLocked(baseCtx context.Context) *inflig
 }
 
 type planRefreshError struct {
-	err error
+	err       error
+	retryable bool
 }
 
 func (e *planRefreshError) Error() string { return e.err.Error() }
-func (e *planRefreshError) Unwrap() error { return e.err }
 
 // BoundStatement is a statement that has been bound to a set of parameters.
 // It is created by calling [PreparedStatement.Bind].
@@ -369,6 +376,7 @@ func (bs *BoundStatement) execute(execCtx context.Context, f func(ResultRow) boo
 
 	receivedResumeToken := false
 	needsPlanRefresh := false
+	planRefreshRetries := 0
 	var prevError error
 
 	// Metadata could change on planned query refresh.
@@ -401,13 +409,16 @@ func (bs *BoundStatement) execute(execCtx context.Context, f func(ResultRow) boo
 			nextStmt, err := bs.ps.planForAttempt(execCtx, attemptCtx, candFinalizedStmt, needsPlanRefresh)
 			if err != nil {
 				if attemptCtx.Err() == nil {
-					err = &planRefreshError{err: err}
+					retryable := planRefreshRetries < maxPlanRefreshRetries
+					planRefreshRetries++
+					err = &planRefreshError{err: err, retryable: retryable}
 				}
 				prevError = err
 				return err
 			}
 			candFinalizedStmt = nextStmt
 			needsPlanRefresh = false
+			planRefreshRetries = 0
 		} else {
 			candFinalizedStmt = finalizedStmt
 		}
@@ -582,7 +593,13 @@ func handleExecuteStreamEnd(
 
 func clientOnlyExecuteQueryRetry(backoff *gax.Backoff, err error) (time.Duration, bool) {
 	var refreshErr *planRefreshError
-	if errors.As(err, &refreshErr) || isQueryExpiredViolation(err) {
+	if errors.As(err, &refreshErr) {
+		if !refreshErr.retryable {
+			return 0, false
+		}
+		return backoff.Pause(), true
+	}
+	if isQueryExpiredViolation(err) {
 		return backoff.Pause(), true
 	}
 	return clientOnlyRetry(backoff, err)
