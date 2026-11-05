@@ -86,6 +86,150 @@ func TestInvoke_NoDeadlineWhenCtxHasNone(t *testing.T) {
 	}
 }
 
+// elapsedDeadlineCtx simulates the race window where wall-clock time has
+// passed ctx.Deadline() (time.Until(deadline) <= 0) before the runtime timer
+// goroutine has closed Done() / populated Err().
+type elapsedDeadlineCtx struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c elapsedDeadlineCtx) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestInvoke_PreCanceledCtx_RejectedUncommittedBeforeSend(t *testing.T) {
+	s, stream := makeActive(t, SessionHooks{})
+	desc := newRoundTripDesc()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res, err := s.Invoke(ctx, desc, "hello")
+	if err == nil {
+		t.Fatal("Invoke with pre-canceled ctx succeeded, want error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(err, context.Canceled) = false, err = %v", err)
+	}
+	if code := status.Code(err); code != codes.Canceled {
+		t.Errorf("status.Code(err) = %v, want %v", code, codes.Canceled)
+	}
+	if outcome := ClassifyErr(err); outcome.State != StateUncommitted {
+		t.Errorf("ClassifyErr(err).State = %v, want %v (ctx dead before Send must be Uncommitted)", outcome.State, StateUncommitted)
+	}
+	if got := len(stream.snapshotSent()); got != 0 {
+		t.Errorf("sent %d frames on pre-canceled ctx, want 0", got)
+	}
+	if !res.SentAt.IsZero() {
+		t.Errorf("res.SentAt = %v, want zero time when Send was never called", res.SentAt)
+	}
+	if res.RPCIDOnSession != 0 {
+		t.Errorf("res.RPCIDOnSession = %d, want 0 when rejected pre-Send", res.RPCIDOnSession)
+	}
+	if got := s.activeVRPC(); got != nil {
+		t.Errorf("activeVRPC = %p, want nil (slot must not be left claimed)", got)
+	}
+}
+
+func TestInvoke_ExpiredDeadlineCtx_RejectedUncommittedWithoutStrippingDeadline(t *testing.T) {
+	s, stream := makeActive(t, SessionHooks{})
+	desc := newRoundTripDesc()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-10*time.Millisecond))
+	defer cancel()
+
+	res, err := s.Invoke(ctx, desc, "hello")
+	if err == nil {
+		t.Fatal("Invoke with expired deadline ctx succeeded, want error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("errors.Is(err, context.DeadlineExceeded) = false, err = %v", err)
+	}
+	if code := status.Code(err); code != codes.DeadlineExceeded {
+		t.Errorf("status.Code(err) = %v, want %v", code, codes.DeadlineExceeded)
+	}
+	if outcome := ClassifyErr(err); outcome.State != StateUncommitted {
+		t.Errorf("ClassifyErr(err).State = %v, want %v (expired deadline pre-Send must be Uncommitted, not TransportFailure)", outcome.State, StateUncommitted)
+	}
+	if got := len(stream.snapshotSent()); got != 0 {
+		t.Errorf("sent %d frames on expired-deadline ctx, want 0 (must not strip VirtualRpc.Deadline and send unbounded request)", got)
+	}
+	if !res.SentAt.IsZero() {
+		t.Errorf("res.SentAt = %v, want zero time when Send was never called", res.SentAt)
+	}
+	if res.RPCIDOnSession != 0 {
+		t.Errorf("res.RPCIDOnSession = %d, want 0 when rejected pre-Send", res.RPCIDOnSession)
+	}
+	if got := s.activeVRPC(); got != nil {
+		t.Errorf("activeVRPC = %p, want nil (slot must not be left claimed)", got)
+	}
+}
+
+func TestInvoke_DeadlineExpiresDuringEncode_RejectedUncommittedBeforeSend(t *testing.T) {
+	t.Run("ctx canceled during Encode", func(t *testing.T) {
+		s, stream := makeActive(t, SessionHooks{})
+		ctx, cancel := context.WithCancel(context.Background())
+		desc := &fakeDesc{
+			method: "RoundTrip",
+			enc: func(req interface{}) ([]byte, error) {
+				cancel()
+				return []byte("payload"), nil
+			},
+			dec: func(buf []byte) (interface{}, error) { return string(buf), nil },
+		}
+
+		res, err := s.Invoke(ctx, desc, "hello")
+		if err == nil {
+			t.Fatal("Invoke succeeded after ctx canceled during Encode, want error")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("errors.Is(err, context.Canceled) = false, err = %v", err)
+		}
+		if outcome := ClassifyErr(err); outcome.State != StateUncommitted {
+			t.Errorf("ClassifyErr(err).State = %v, want %v", outcome.State, StateUncommitted)
+		}
+		if got := len(stream.snapshotSent()); got != 0 {
+			t.Errorf("sent %d frames, want 0", got)
+		}
+		if !res.SentAt.IsZero() {
+			t.Errorf("res.SentAt = %v, want zero", res.SentAt)
+		}
+		if got := s.activeVRPC(); got != nil {
+			t.Errorf("activeVRPC = %p, want nil", got)
+		}
+	})
+
+	t.Run("deadline elapsed before ctx.Err populated", func(t *testing.T) {
+		s, stream := makeActive(t, SessionHooks{})
+		ctx := elapsedDeadlineCtx{
+			Context:  context.Background(),
+			deadline: time.Now().Add(-5 * time.Millisecond),
+		}
+
+		res, err := s.Invoke(ctx, newRoundTripDesc(), "hello")
+		if err == nil {
+			t.Fatal("Invoke succeeded with non-positive remaining deadline, want error")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("errors.Is(err, context.DeadlineExceeded) = false, err = %v", err)
+		}
+		if code := status.Code(err); code != codes.DeadlineExceeded {
+			t.Errorf("status.Code(err) = %v, want %v", code, codes.DeadlineExceeded)
+		}
+		if outcome := ClassifyErr(err); outcome.State != StateUncommitted {
+			t.Errorf("ClassifyErr(err).State = %v, want %v", outcome.State, StateUncommitted)
+		}
+		if got := len(stream.snapshotSent()); got != 0 {
+			t.Errorf("sent %d frames, want 0 (must not strip VirtualRpc.Deadline)", got)
+		}
+		if !res.SentAt.IsZero() {
+			t.Errorf("res.SentAt = %v, want zero", res.SentAt)
+		}
+		if got := s.activeVRPC(); got != nil {
+			t.Errorf("activeVRPC = %p, want nil", got)
+		}
+	})
+}
+
 func TestInvoke_AttemptNumberFromCtx(t *testing.T) {
 	// WithAttempt is a no-op unless WithVRpcMetadata has seeded the context
 	// with a vrpcMetadata struct first — that's how the retrying interceptor

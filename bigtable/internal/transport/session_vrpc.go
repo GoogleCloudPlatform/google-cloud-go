@@ -107,13 +107,24 @@ func (s *Session) Invoke(ctx context.Context, desc VRpcDescriptor, req interface
 			unavailable(ErrSessionNotActive, "session is not active (state: %v)", st))
 	}
 
+	if err := ctx.Err(); err != nil {
+		return result, tagErr(StateUncommitted, err)
+	}
+
 	reqBytes, err := desc.Encode(req)
 	if err != nil {
 		return result, tagErr(StateUncommitted, fmt.Errorf("encode vRPC request: %w", err))
 	}
 
+	attempt := currentAttempt(ctx)
+	sessionReq, err := buildInvokeRequest(ctx, 0, reqBytes, attempt, startTime)
+	if err != nil {
+		return result, tagErr(StateUncommitted, err)
+	}
+
 	rpcID := s.nextRPCID.Add(1)
 	result.RPCIDOnSession = rpcID
+	sessionReq.GetVirtualRpc().RpcId = rpcID
 	rpc := &vrpcImpl{
 		id:         rpcID,
 		method:     desc.Method(),
@@ -133,11 +144,9 @@ func (s *Session) Invoke(ctx context.Context, desc VRpcDescriptor, req interface
 	// server's keepalive clock is implicitly reset by our activity.
 	s.resetHeartbeatDeadline()
 
-	attempt := currentAttempt(ctx)
 	if attempt > 1 {
 		s.noteRetryAttempt(ctx, desc.Method(), attempt)
 	}
-	sessionReq := buildInvokeRequest(ctx, rpcID, reqBytes, attempt, startTime)
 
 	// Capture SentAt immediately before the frame is handed to Send so
 	// downstream metrics can compute client-side blocking latency as
@@ -197,9 +206,13 @@ func (s *Session) noteRetryAttempt(ctx context.Context, method string, attempt i
 // for a single vRPC attempt. Pure — no I/O, no side effects. The
 // VirtualRpc.Deadline field carries the remaining budget as a duration
 // so the server measures from receive time rather than an absolute wall
-// clock. Omitted when ctx has no deadline or the budget is already
-// non-positive (the client-side ctx.Done branch will fire immediately).
-func buildInvokeRequest(ctx context.Context, rpcID int64, reqBytes []byte, attempt int64, startTime time.Time) *spb.SessionRequest {
+// clock. Omitted when ctx has no deadline; returns an error if ctx is
+// already cancelled or its deadline has already elapsed so callers never
+// strip VirtualRpc.Deadline and transmit an unbounded request.
+func buildInvokeRequest(ctx context.Context, rpcID int64, reqBytes []byte, attempt int64, startTime time.Time) (*spb.SessionRequest, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	virtRPC := &spb.VirtualRpcRequest{
 		RpcId:   rpcID,
 		Payload: reqBytes,
@@ -209,13 +222,18 @@ func buildInvokeRequest(ctx context.Context, rpcID int64, reqBytes []byte, attem
 		},
 	}
 	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining > 0 {
-			virtRPC.Deadline = durationpb.New(remaining)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, context.DeadlineExceeded
 		}
+		virtRPC.Deadline = durationpb.New(remaining)
 	}
 	return &spb.SessionRequest{
 		Payload: &spb.SessionRequest_VirtualRpc{VirtualRpc: virtRPC},
-	}
+	}, nil
 }
 
 // awaitInvokeResult blocks until either ctx cancels or the server
