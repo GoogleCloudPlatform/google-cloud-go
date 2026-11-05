@@ -783,3 +783,48 @@ func TestNewClient_DecouplesFromConstructorCtx(t *testing.T) {
 	}
 }
 
+func TestNewClient_MidInitConstructorCtxCancelAborts(t *testing.T) {
+	orig := newMetricsFactory
+	var shutdownCalls atomic.Int32
+	initCtx, initCancel := context.WithCancel(context.Background())
+	defer initCancel()
+
+	newMetricsFactory = func(ctx context.Context, project, instance, appProfile, clientNameOverride string, _ metrics.MetricsProvider, _ ...option.ClientOption) (*metrics.Factory, error) {
+		f := newTestFactory(t)
+		origShutdown := f.Shutdown
+		f.Shutdown = func() {
+			shutdownCalls.Add(1)
+			if origShutdown != nil {
+				origShutdown()
+			}
+		}
+		// Cancel the caller's constructor ctx mid-initialization (after the
+		// initial pre-cancelled check). context.AfterFunc propagates the
+		// cancellation to backgroundCtx for the duration of NewClient.
+		initCancel()
+		return f, nil
+	}
+	t.Cleanup(func() { newMetricsFactory = orig })
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen: %v", err)
+	}
+	srv := grpc.NewServer()
+	t.Cleanup(srv.Stop)
+	go func() { _ = srv.Serve(lis) }()
+
+	ff := btransport.NewFeatureFlagsProto(btransport.FeatureFlagsInput{})
+	_, err = NewClient(
+		initCtx, "p", "i", "ap", "", metrics.NoopMetricsProvider{}, ff,
+		option.WithEndpoint(lis.Addr().String()),
+		option.WithoutAuthentication(),
+		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewClient after mid-init ctx cancel = %v, want context.Canceled", err)
+	}
+	if got := shutdownCalls.Load(); got != 1 {
+		t.Errorf("factory.Shutdown call count on mid-init cancel = %d, want 1", got)
+	}
+}

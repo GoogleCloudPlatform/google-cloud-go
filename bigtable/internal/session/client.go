@@ -373,6 +373,11 @@ func NewClient(
 	}
 
 	backgroundCtx, cancel := context.WithCancel(context.Background())
+	var stopPropagation func() bool
+	if ctx != nil && ctx.Done() != nil {
+		stopPropagation = context.AfterFunc(ctx, cancel)
+		defer stopPropagation()
+	}
 
 	factory, err := newMetricsFactory(backgroundCtx, project, instance, appProfile, clientName, metricsProvider)
 	if err != nil {
@@ -452,6 +457,11 @@ func NewClient(
 	if err != nil {
 		cleanupOnErr()
 		return nil, fmt.Errorf("session.NewClient: NewBigtableChannelPool: %w", err)
+	}
+	if stopPropagation != nil && !stopPropagation() {
+		_ = pool.Close()
+		cleanupOnErr()
+		return nil, fmt.Errorf("session.NewClient: %w", ctx.Err())
 	}
 	dsm := btransport.NewDynamicScaleMonitor(btopt.DefaultDynamicChannelPoolConfig(), pool)
 	dsm.Start(backgroundCtx)
