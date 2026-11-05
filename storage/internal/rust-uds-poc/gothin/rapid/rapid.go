@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -98,7 +99,15 @@ func Run(name string, op Opener) {
 	const MiB = 1 << 20
 
 	shouldRun := func(tag string) bool {
-		return *onlySLI == "" || *onlySLI == tag
+		if *onlySLI == "" {
+			return true
+		}
+		for _, part := range strings.Split(*onlySLI, ",") {
+			if strings.TrimSpace(part) == tag {
+				return true
+			}
+		}
+		return false
 	}
 
 	fmt.Printf("backend=%s bucket=%s vcpus=%d\n", name, *bucket, runtime.NumCPU())
