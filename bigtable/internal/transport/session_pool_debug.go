@@ -60,7 +60,8 @@ type poolMetrics struct {
 	pickHistoryMu   sync.Mutex
 	pickHistory     []PickHistoryEvent
 	pickHistoryHead int
-	afePickCounts   map[AfeID]int64
+	afePickCounts   map[AfeID]afePickStat
+	afePickSeq      uint64
 
 	// Pool-wide latency histograms — lifetime-of-pool, survive session
 	// churn (per-session ring buffers cap at 256 samples each).
@@ -356,6 +357,14 @@ const maxPickHistory = 500
 // or rotated AFEs do not grow the map indefinitely.
 const maxAfePickCounts = 512
 
+// afePickStat tracks cumulative picks and the most recent pick sequence
+// number for an AFE so bounded map eviction drops the least-recently-picked
+// (stale/rotated) AFE rather than newly arrived AFEs with small counts.
+type afePickStat struct {
+	count   int64
+	lastSeq uint64
+}
+
 // PickHistoryEvent is one row in the pick-decision log. Populated even
 // for no-candidate picks so loadz can show the fallback frequency.
 type PickHistoryEvent struct {
@@ -391,21 +400,27 @@ func (p *SessionPoolImpl) recordPickDecision(d PickDecision, pickerName string) 
 		}
 	}
 	if d.Winner != 0 {
-		if _, ok := p.m.afePickCounts[d.Winner]; ok {
-			p.m.afePickCounts[d.Winner]++
+		p.m.afePickSeq++
+		if st, ok := p.m.afePickCounts[d.Winner]; ok {
+			st.count++
+			st.lastSeq = p.m.afePickSeq
+			p.m.afePickCounts[d.Winner] = st
 		} else {
 			for len(p.m.afePickCounts) >= maxAfePickCounts {
-				var minKey AfeID
-				var minCount int64 = math.MaxInt64
+				var oldestKey AfeID
+				var oldestSeq uint64 = math.MaxUint64
 				for k, v := range p.m.afePickCounts {
-					if v < minCount {
-						minCount = v
-						minKey = k
+					if v.lastSeq < oldestSeq {
+						oldestSeq = v.lastSeq
+						oldestKey = k
 					}
 				}
-				delete(p.m.afePickCounts, minKey)
+				delete(p.m.afePickCounts, oldestKey)
 			}
-			p.m.afePickCounts[d.Winner] = 1
+			p.m.afePickCounts[d.Winner] = afePickStat{
+				count:   1,
+				lastSeq: p.m.afePickSeq,
+			}
 		}
 	}
 	p.m.pickHistoryMu.Unlock()
@@ -435,7 +450,7 @@ func (p *SessionPoolImpl) snapshotAfePickCounts() map[AfeID]int64 {
 	defer p.m.pickHistoryMu.Unlock()
 	out := make(map[AfeID]int64, len(p.m.afePickCounts))
 	for k, v := range p.m.afePickCounts {
-		out[k] = v
+		out[k] = v.count
 	}
 	return out
 }

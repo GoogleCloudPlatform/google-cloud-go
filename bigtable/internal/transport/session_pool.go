@@ -235,7 +235,7 @@ func NewSessionPoolImpl(id uint64, poolName string, streamFactory func(ctx conte
 		sl:                 newSessionList(),
 		debugEnabled:       debugEnabled,
 	}
-	pool.m.afePickCounts = make(map[AfeID]int64)
+	pool.m.afePickCounts = make(map[AfeID]afePickStat)
 
 	defaultCfg := defaultPoolConfig()
 	fetcher := func() *PoolStats { return pool.Stats() }
