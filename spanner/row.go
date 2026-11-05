@@ -537,7 +537,7 @@ func structPointers(sliceItem reflect.Value, cols []*sppb.StructType_Field, fiel
 
 		var fieldVal reflect.Value
 		if info, ok := fieldTag[strings.ToLower(colName.GetName())]; ok {
-			fieldVal = sliceItem.FieldByIndex(info.indexPath)
+			fieldVal = fieldByIndexOrAlloc(sliceItem, info.indexPath)
 		} else if !lenient {
 			return nil, errNoOrDupGoField(sliceItem, colName.GetName())
 		}
@@ -570,9 +570,20 @@ func initFieldTag(sliceItem reflect.Value, fieldTagMap *map[string]fieldInfo, pa
 			continue
 		}
 		currentPath := append(path, i)
-		if name == "" && fieldType.Anonymous && fieldType.Type.Kind() == reflect.Struct {
-			// found an embedded struct
+		fieldTypeType := fieldType.Type
+		if fieldTypeType.Kind() == reflect.Ptr {
+			fieldTypeType = fieldTypeType.Elem()
+		}
+		if name == "" && fieldType.Anonymous && fieldTypeType.Kind() == reflect.Struct {
+			// found an embedded struct (value or pointer)
 			sliceItemOfAnonymous := sliceItem.Field(i)
+			if sliceItemOfAnonymous.Kind() == reflect.Ptr {
+				if sliceItemOfAnonymous.IsNil() {
+					sliceItemOfAnonymous = reflect.New(fieldTypeType).Elem()
+				} else {
+					sliceItemOfAnonymous = sliceItemOfAnonymous.Elem()
+				}
+			}
 			initFieldTag(sliceItemOfAnonymous, fieldTagMap, currentPath)
 			continue
 		}
@@ -595,4 +606,20 @@ func initFieldTag(sliceItem reflect.Value, fieldTagMap *map[string]fieldInfo, pa
 			tagged:    tagged,
 		}
 	}
+}
+
+func fieldByIndexOrAlloc(v reflect.Value, index []int) reflect.Value {
+	for _, x := range index {
+		if v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				if !v.CanSet() {
+					return reflect.Value{}
+				}
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		v = v.Field(x)
+	}
+	return v
 }
