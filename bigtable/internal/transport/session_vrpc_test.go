@@ -1085,4 +1085,3 @@ func TestInvoke_ResetsHeartbeatDeadlineBeforeClaimSlot(t *testing.T) {
 	hbCancel()
 	<-hbDone
 }
-

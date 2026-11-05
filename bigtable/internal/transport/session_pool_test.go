@@ -1038,4 +1038,3 @@ func TestCheckoutSession_NoLostWakeupOnConcurrentSessionReady(t *testing.T) {
 		}
 	}
 }
-
