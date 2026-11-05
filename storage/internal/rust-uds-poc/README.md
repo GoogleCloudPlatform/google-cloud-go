@@ -16,6 +16,7 @@
 
 - **Lifecycle & Packaging:** Sidecar embedded via `//go:embed`, extracted to `~/.cache/gcs-core/<hash>/` (`memfd_create(2)` fallback on `noexec`/read-only disks), one sidecar per OS UID shared across Go processes (connection-refcounted `active_conns` + idle timeout). Also exports `gcs_core_start_inproc` / `gcs_core_stop_inproc` (`staticlib`/`cdylib`, `include/gcs_core_uds.h`) for single-process embedded UDS deployment.
 - **Auth & IPC:** Per-caller credential sessions (OAuth2 access tokens lent over UDS, bound to peer `uid+pid` via `SO_PEERCRED` with dead-PID reaping), tuned HTTP/2 flow control (`16 MiB` stream / `64 MiB` conn windows, `4 MiB` frames, `8 MiB` kernel `SO_SNDBUF`/`SO_RCVBUF`, zero-copy `RawCodec`), plus optional shared-memory data plane (`memfd` + `SCM_RIGHTS` + `mmap`).
+- **Connection Pool Alignment:** Both Native Go and the Rust sidecar use `192` gRPC sub-channels (`1` per vCPU via `option.WithGRPCConnectionPool(runtime.NumCPU())` in Go and `with_grpc_subchannel_count` in Rust) on data-plane `Storage` streams, and `1` gRPC channel (`option.WithGRPCConnectionPool(1)` / `StorageControl::builder().build()`) on control-plane `ListObjects` / `ListBuckets` operations.
 
 ---
 
@@ -23,127 +24,116 @@
 
 | Challenge | Go Verdict & Measured Impact |
 |---|---|
-| **Zero copy across UDS boundary** | **High effort (Blocker only if zero-copy over standard `io.Reader`/`io.Writer` without shm is required).** Over a gRPC/UDS socket every byte incurs dual kernel copies (~0.2 CPU‑s/GiB) plus HTTP/2 framing. With tuned 16 MiB/64 MiB HTTP/2 windows, 4 MiB frames, 8 MiB UDS buffers, and zero-copy `RawCodec`, 128 MiB `us-central1` → `us-west1` / `us-west1-a` transfers measure **2.31–2.89 CPU‑s/GiB** on UDS (`go-uds-grpc` **2.31–2.34** regional / **2.80–2.89** zonal, `go-uds-json` **2.34–2.44**) vs **2.67–3.27 CPU‑s/GiB** for native `go-grpc-cp` and **1.48–1.59 CPU‑s/GiB** for `go-json-h1`. On 48-thread 5-minute sustained workloads, UDS reaches **1349.0 MiB/s vs 1358.4 MiB/s** (**99.3% parity**) on Regional gRPC `BidiRead` (`Workload 4`) and **4517.1 MiB/s vs 5176.6 MiB/s** (**87.3% parity**) on Zonal gRPC `BidiWrite` (`Workload 5`). Shared memory (`memfd` + `SCM_RIGHTS` + `mmap`) drops 128 MiB read CPU from **2.41–2.47 s/GiB** to **1.32–1.57 s/GiB** with `copy()` (`Go 0.11–0.14`) and **1.16–1.46 s/GiB** with a loaned zero-copy slice (**Go `0.00–0.01 s/GiB`**). |
+| **Zero copy across UDS boundary** | **High effort (Blocker only if zero-copy over standard `io.Reader`/`io.Writer` without shm is required).** Over a gRPC/UDS socket every byte incurs dual kernel copies (~0.2 CPU‑s/GiB) plus HTTP/2 framing. With tuned 16 MiB/64 MiB HTTP/2 windows, 4 MiB frames, 8 MiB UDS buffers, and zero-copy `RawCodec`, 128 MiB `us-central1` → `us-west1` / `us-west1-a` transfers measure **2.31–2.89 CPU‑s/GiB** on UDS (`go-uds-grpc` **2.31–2.34** regional / **2.80–2.89** zonal, `go-uds-json` **2.34–2.44**) vs **2.67–3.27 CPU‑s/GiB** for native `go-grpc-cp` and **1.48–1.59 CPU‑s/GiB** for `go-json-h1`. On 48-thread 5-minute sustained workloads, UDS reaches **1,414.5 MB/s vs 1,424.4 MB/s** (**-0.7% diff**) on Regional gRPC `BidiRead` (`1,469.5 MB/s vs 1,443.1 MB/s`, **+1.8%** on Zonal) and **4,736.5 MB/s vs 5,428.1 MB/s** (**-12.7% diff**) on Zonal gRPC `BidiWrite`. Shared memory (`memfd` + `SCM_RIGHTS` + `mmap`) drops 128 MiB read CPU from **2.41–2.47 s/GiB** to **1.32–1.57 s/GiB** with `copy()` (`Go 0.11–0.14`) and **1.16–1.46 s/GiB** with a loaned zero-copy slice (**Go `0.00–0.01 s/GiB`**). |
 | **Packaging and Distribution** | **High effort.** `go get` / `go mod tidy` and `CGO_ENABLED=0` cross-compilation keep working (main win over FFI). Cost: **+6.9 MB per platform** in the Go module zip (~41 MB for 6 platforms vs 1 MB today) and **+21 MB** per linked Go binary (17.4 MB stripped static musl sidecar). Rust side still requires a C toolchain per target (`aws-lc-sys`). |
 | **Deployment in major customer environments** | **High effort, with hard failures unless mitigated.** Distroless/`FROM scratch` requires bundled `webpki-roots` CA certs (otherwise sidecar panics at startup); `noexec` `/tmp` blocks extracted binary execution, and the `memfd_create` fallback is blocked on hardened kernels (`vm.memfd_noexec=1/2` / MDWE) and flagged by enterprise EDR (Falcon/Defender); UDS path >108 bytes fails; Cloud Run/Functions/GKE pay a second process (~60–100 MB idle RSS, 8–37 ms spawn) per container instance. Peer-UID verification, dead-PID session/handle reaping, stale socket recovery, and connection-refcounted idle exit all pass. |
 | **Mono Repo Concerns** | **High effort.** `google-cloud-go` would ship prebuilt binaries compiled from `google-cloud-rust` across separate release cadences, SBOMs, and CVE pipelines (a sidecar CVE forces a Go module release and vice-versa). Shared sidecar sockets require per-version namespacing to prevent version skew across binaries on the same host. |
 | **Tool chain, coordination and maintenance costs** | **High effort.** Requires Go + Rust + C toolchains and a bidirectional proto contract (`gcscore.proto`); every new SDK option/header lands in proto + Rust + Go. Error mapping preserves HTTP/gRPC status codes and auth failures (`401`/`403`/`404`/`412`), but structured `google.rpc.Status.details` require explicit plumbing. |
-| **Impedance mismatch** | **Blocker for 100% drop-in backwards compatibility.** Standard reads/writes/appendable writes/lists/preconditions map cleanly, and credentials cross as lent 1 h OAuth2 access tokens bound to `(uid, pid)` via `SO_PEERCRED`. **Unfixable across processes:** caller-process hooks (`option.WithHTTPClient` / custom `http.RoundTripper`, `option.WithGRPCConn`, in-process OTel span/meter providers, `context.Context` values) cannot cross the socket. **Current Rust crate gaps:** (1) lacks **DirectPath** on GCE/GKE; (2) `open_appendable_object` (gRPC `BidiWriteObject`) in `google-cloud-storage` 1.21 is **Zonal/appendable-only** (Regional gRPC `BidiWriteObject` is `N/A`; on Zonal `us-west1-a` where both use gRPC `BidiWriteObject`, UDS reaches `4517.1 MiB/s` vs `5176.6 MiB/s` native on 48-thread 200 MiB writes and `71.5–81.3 MiB/s` vs `69.2–72.8 MiB/s` on 128 MiB sequential writes). |
-| **Size of the Binary** | **OK / High effort.** +21 MB per Go binary (17.4 MB stripped sidecar), +6.9 MB per platform in module zip. Peak RSS of the pair is at parity with native on reads and sequential transfers (`1855 MiB` native vs `2822 MiB` UDS on 48-thread BidiRead; `0.97%` vs `1.45%` VM RAM), though under 48 × 200 MiB concurrent writes the Rust SDK maintains per-stream in-memory replay/send buffers (`15.87 GiB` / `2.58%` VM RAM on Zonal gRPC `AppendableObjectWriter` `ReplayBuffer`, and `18.49 GiB` / `3.21%` VM RAM on Regional JSON `write_object().send_buffered()`). |
+| **Impedance mismatch** | **Blocker for 100% drop-in backwards compatibility.** Standard reads/writes/appendable writes/lists/preconditions map cleanly, and credentials cross as lent 1 h OAuth2 access tokens bound to `(uid, pid)` via `SO_PEERCRED`. **Unfixable across processes:** caller-process hooks (`option.WithHTTPClient` / custom `http.RoundTripper`, `option.WithGRPCConn`, in-process OTel span/meter providers, `context.Context` values) cannot cross the socket. **Current Rust crate gaps:** (1) lacks **DirectPath** on GCE/GKE; (2) `open_appendable_object` (gRPC `BidiWriteObject`) in `google-cloud-storage` 1.21 is **Zonal/appendable-only** (Regional gRPC `BidiWriteObject` is `N/A`; on Zonal `us-west1-a` where both use gRPC `BidiWriteObject`, UDS reaches `4,736.5 MB/s` vs `5,428.1 MB/s` native on 48-thread 200 MB writes). |
+| **Size of the Binary** | **OK / High effort.** +21 MB per Go binary (17.4 MB stripped sidecar), +6.9 MB per platform in module zip. Peak Memory on the 720 GiB VM is `0.98%` (Native) vs `1.50%` (`udsthin`) on 48-thread Regional BidiRead (`0.99%` vs `1.62%` on Zonal), and `1.00%` (Native) vs `2.71%` (`udsthin`) on 48-thread Zonal BidiWrite due to `AppendableObjectWriter` per-stream `ReplayBuffer` retention in `google-cloud-storage` 1.21. |
 | **Harder debugging experience** | **High effort.** Go stack traces, `pprof`, `-race`, and HTTP/gRPC tracing stop at the UDS boundary; sidecar panics/stalls surface to Go as generic `UNAVAILABLE` errors and require correlating separate sidecar logs, metrics (`Stats`), and core dumps. |
 | **Direct copy of data into GPU buffers** | **N/A for Go today (Blocker across processes if ever added).** Today's Go SDK has no GPU/CUDA buffer API. If ever added, a separate sidecar process cannot write into caller CUDA buffers without CUDA IPC handles (`cudaIpcGetMemHandle`) and linking CUDA into the sidecar; `memfd` shm provides host RAM only. |
 
 ---
 
-## 3. Experimental Results (`c4-standard-192`, `us-central1-b` VM → `us-west1` Bucket, 200 Gbps `TIER_1`)
+## 3. Benchmarking Results (`c4-standard-192`, `us-central1` VM → `us-west1` Regional & `us-west1-a` Zonal Buckets, 200 Gbps `TIER_1`)
 
-- **Benchmark Configuration (per Worklog spec):** GCE `c4-standard-192` (`192 vCPUs`, `720 GiB RAM`, Ubuntu 24.04 LTS, `GVNIC` + `TIER_1` 200 Gbps networking) in `us-central1-b` (`instance_id=4800314160389265979`) targeting standard regional bucket `gs://cpriti-thickthin-poc-usw1` in `us-west1` (non-colocated CloudPath).
-- **Metrics:** Latency (`P50`, `P90`, `P99`, `Max`, `Mean`) measured at outermost Go caller boundary; CPU and Peak RSS sum **Go process + Rust sidecar** (`getrusage` / `VmHWM` + sidecar `Stats`) alongside Cloud Monitoring VM telemetry (`compute.googleapis.com/instance/cpu/utilization` and `agent.googleapis.com/memory/percent_used`).
+- **Configuration:** GCE `c4-standard-192` (`192 vCPUs`, `720 GiB RAM`, Ubuntu 24.04 LTS, `GVNIC` + `TIER_1` 200 Gbps NIC) in `us-central1-b` targeting Standard Regional bucket `gs://cpriti-thickthin-poc-usw1` (`us-west1`) and Zonal Rapid bucket `gs://cpriti-thickthin-poc-zonal-usw1a` (`us-west1-a`) over CloudPath.
+- **Metrics:**
+  - **Latency (`P50 / P90 / P99`) & Throughput:** Measured at the outermost Go caller boundary.
+  - **CPU Utilization:** Cloud Monitoring `compute.googleapis.com/instance/cpu/utilization`.
+  - **Peak Memory:** Cloud Monitoring `agent.googleapis.com/memory/percent_used` (`state=used`).
 
-### Table 1: Workloads 1–3 (Rapid SLIs: `open`, `read50x2x4/serial`, `read50x2x4/concurrent`, `random8k`) & Workload 6 (`list-objects-100`, `list-buckets-100`)
-*Two rounds (`r1–r2`), `-iters=10` (`random8k`: 2,000 × 8 KiB reads). Cross-region RTT (`us-central1` ↔ `us-west1`) is ~38 ms.*
+### Open (Start a BidiRead streaming request on a 200 MB object)
 
-| Workload / SLI | Metric | Native Go gRPC (`go-grpc-mrd`) | Go→UDS→Rust gRPC (`go-uds-grpc`) | Native Go JSON (`go-json-range`) | Go→UDS→Rust JSON (`go-uds-json`) |
-|---|---|---|---|---|---|
-| **W1: `open` (200 MiB, Regional `us-west1`)** | P50 / P90 / P99 | 207.6–208.4 / 221.6–235.2 / 221.6–235.2 ms | 208.8–221.5 / 221.7–229.1 / 221.7–229.1 ms | 64.4–114.8 / 125.4–183.9 / 125.4–183.9 ms | 214.6–218.0 / 233.1–242.4 / 233.1–242.4 ms |
-| | Max / Mean / Rate (`ops/s`) | 235.5–245.2 / 211.9–214.2 ms / **4.67–4.72 ops/s** | 243.7–250.1 / 200.7–209.2 ms / **4.78–4.98 ops/s** | 157.2–236.9 / 114.4–121.5 ms / **8.23–8.74 ops/s** | 299.7–305.6 / 212.2–228.1 ms / **4.38–4.71 ops/s** |
-| | CPU ms/op / Peak RSS | 25.28–26.28 ms (`0.1%`) / 85–92 MiB | **16.00–16.60 ms (`0.0%`)** / **74–81 MiB** | 2.86–3.04 ms (`0.0%`) / 38–40 MiB | **14.84–15.33 ms (`0.0%`)** / 77–78 MiB |
-| **W1: `open` (200 MiB, Zonal `us-west1-a`)** | P50 / P90 / P99 | **389.8–392.6** / 398.8–411.9 / 398.8–411.9 ms | 983.7–1036.0 / 1260.8–1342.8 / 1260.8–1342.8 ms | N/A *(Zonal is gRPC-only)* | N/A *(Zonal is gRPC-only)* |
-| | Max / Mean / Rate (`ops/s`) | 417.5–418.2 / 378.8–399.1 ms / **2.51–2.64 ops/s** | 1399.2–2921.9 / 976.2–1081.9 ms / **0.92–1.02 ops/s** | N/A | N/A |
-| | CPU ms/op / Peak RSS | 70.13–82.74 ms (`0.1%`) / 88–90 MiB | **19.12–19.77 ms (`0.0%`)** / **82–83 MiB** | N/A | N/A |
-| **W2a: `read50x2x4/serial` (100 MiB, Regional `us-west1`)** | P50 / P90 / P99 | 4.17–4.44 / 4.27–4.54 / 4.27–4.54 s | 4.40–4.55 / 4.45–4.60 / 4.45–4.60 s | 7.29–7.58 / 13.69–13.85 / 13.69–13.85 s | 4.81–4.88 / 4.86–5.22 / 4.86–5.22 s |
-| | Max / Mean / MiB/s | 4.77–5.36 / 4.30–4.48 s / **22.2–23.2 MiB/s** | 4.67–4.79 / 4.41–4.56 s / **21.8–22.6 MiB/s** | 14.78–15.23 / 8.99–9.46 s / **10.5–11.1 MiB/s** | 5.04–5.27 / 4.83–5.02 s / **19.8–20.6 MiB/s** |
-| | CPU s/GiB / Peak RSS | 3.44–3.64 (`0.0%`) / 186–193 MiB | **2.32–2.40 (`0.0%`)** / 200 MiB | 3.23–3.49 (`0.0%`) / 155–156 MiB | **2.56–2.87 (`0.0%`)** / 211–212 MiB |
-| **W2a: `read50x2x4/serial` (100 MiB, Zonal `us-west1-a`)** | P50 / P90 / P99 | **4.13–4.25** / 4.20–4.37 / 4.20–4.37 s | **4.30–4.82** / 4.30–4.86 / 4.30–4.86 s | N/A | N/A |
-| | Max / Mean / MiB/s | 4.43–4.51 / 4.17–4.28 s / **23.1–23.7 MiB/s** | 4.47–5.09 / 4.31–4.83 s / **20.2–22.7 MiB/s** | N/A | N/A |
-| | CPU s/GiB / Peak RSS | 3.56–3.58 (`0.0%`) / 190–192 MiB | **2.63–3.32 (`0.0%`)** / 204–208 MiB | N/A | N/A |
-| **W2b: `read50x2x4/concurrent` (100 MiB, Regional `us-west1`)** | P50 / P90 / P99 | 3.32–3.42 / 3.39–3.47 / 3.39–3.47 s | 3.36–3.38 / 3.45–3.56 / 3.45–3.56 s | 427.2–490.6 / 460.3–615.5 / 460.3–615.5 ms | 3.25–3.62 / 3.40–3.70 / 3.40–3.70 s |
-| | Max / Mean / MiB/s | 3.39–3.47 / 3.34–3.41 s / **29.1–29.8 MiB/s** | 3.46–3.66 / 3.37–3.38 s / **29.3–29.5 MiB/s** | 462.0–644.2 / 432.3–513.1 ms / **193.0–228.4 MiB/s** | 3.43–3.70 / 3.27–3.60 s / **27.6–30.5 MiB/s** |
-| | CPU s/GiB / Peak RSS | 3.18–3.61 (`0.1%`) / 222–287 MiB | **2.53–2.58 (`0.0%`)** / 303–380 MiB | 2.99–3.77 (`0.4%`) / 254–257 MiB | **2.76–2.85 (`0.0%`)** / 394–422 MiB |
-| **W2b: `read50x2x4/concurrent` (100 MiB, Zonal `us-west1-a`)** | P50 / P90 / P99 | 3.35–3.39 / 3.43–3.44 / 3.43–3.44 s | **3.22–3.34** / **3.32–3.43** / **3.32–3.43 s** | N/A | N/A |
-| | Max / Mean / MiB/s | 3.43–3.44 / 3.37–3.39 s / **29.1–29.3 MiB/s** | 3.44–3.47 / **3.25–3.35 s** / **29.1–29.6 MiB/s** | N/A | N/A |
-| | CPU s/GiB / Peak RSS | 3.58–4.11 (`0.1%`) / 216–293 MiB | **3.11–3.34 (`0.0%`)** / 360–403 MiB | N/A | N/A |
-| **W3: `random8k` (8 KiB reads, Regional `us-west1`)** | P50 / P90 / P99 | 38.5 / 40.4–41.4 / 44.1–51.3 ms | 40.8–43.8 / 44.7–47.4 / 48.7–57.2 ms | 55.3–56.4 / 63.4–63.7 / 78.1–87.0 ms | 37.8–40.4 / 43.6–44.3 / 54.0–59.2 ms |
-| | Max / Mean / Rate (`ops/s`) | 56.6–204.7 / 38.9–39.5 ms / **25.3–25.7 ops/s** (`0.2 MiB/s`) | 59.3–128.3 / 40.9–44.5 ms / **22.5–24.4 ops/s** (`0.2 MiB/s`) | 143.0–152.5 / 56.7–57.3 ms / **17.5–17.6 ops/s** (`0.1 MiB/s`) | 83.4–97.0 / 39.6–40.4 ms / **24.8–25.3 ops/s** (`0.2 MiB/s`) |
-| | CPU ms/op / Peak RSS | **0.16 ms (`0.0%`)** / 223–287 MiB | **0.32–0.35 ms (`0.0%`)** / 315–381 MiB | 0.21–0.23 ms (`0.0%`) / 254–257 MiB | **0.35–0.36 ms (`0.0%`)** / 405–434 MiB |
-| **W3: `random8k` (8 KiB reads, Zonal `us-west1-a`)** | P50 / P90 / P99 | **35.9–36.4** / 38.6–39.2 / 39.1–44.9 ms | **35.9–39.0** / 39.0–39.9 / **39.5–42.1 ms** | N/A | N/A |
-| | Max / Mean / Rate (`ops/s`) | 52.5–81.4 / 36.7–36.9 ms / **27.1–27.2 ops/s** (`0.2 MiB/s`) | **40.3–59.3** / 36.8–39.1 ms / **25.5–27.2 ops/s** (`0.2 MiB/s`) | N/A | N/A |
-| | CPU ms/op / Peak RSS | **0.28 ms (`0.0%`)** / 217–294 MiB | **0.56–0.68 ms (`0.0%`)** / 368–399 MiB | N/A | N/A |
-| **W6a: `list-objects-100` (Regional `us-west1`)** | P50 / P90 / P99 | **73.6–100.4** / 135.7–142.5 / 135.7–142.5 ms | **84.8–95.1** / 129.5–131.5 / 129.5–131.5 ms | 130.9–136.0 / 165.3–182.7 / 165.3–182.7 ms | **84.1–97.6** / 127.5–158.3 / 127.5–158.3 ms |
-| | Max / Mean / Rate (`ops/s`) | 209.2–214.8 / 106.5–112.7 ms / **8.9–9.4 ops/s** | 229.2–236.5 / 111.2–114.0 ms / **8.8–9.0 ops/s** | 192.8–292.8 / 146.5–150.9 ms / 6.6–6.8 ops/s | 228.5–234.8 / 112.6–115.0 ms / **8.7–8.9 ops/s** |
-| | CPU ms/op / Peak RSS | 8.85–54.39 ms (`0.0–0.3%`) / 87–93 MiB | **3.15–3.25 ms (`0.0%`)** / **69 MiB** | 8.67–10.10 ms (`0.0%`) / 45 MiB | **3.36–3.58 ms (`0.0%`)** / 65–69 MiB |
-| **W6a: `list-objects-100` (Zonal `us-west1-a`)** | P50 / P90 / P99 | **100.9–104.0** / 126.5–145.9 / 126.5–145.9 ms | **96.5–101.0** / 129.5–134.3 / 129.5–134.3 ms | 123.7–148.5 / 156.5–172.8 / 156.5–172.8 ms | **96.0–99.6** / 124.7–141.0 / 124.7–141.0 ms |
-| | Max / Mean / Rate (`ops/s`) | 236.5–245.1 / 119.6–120.9 ms / **8.3–8.4 ops/s** | 250.0–276.3 / 118.3–124.5 ms / **8.0–8.5 ops/s** | 157.7–302.9 / 144.6–154.4 ms / 6.5–6.9 ops/s | 227.9–271.5 / 115.9–122.3 ms / **8.2–8.6 ops/s** |
-| | CPU ms/op / Peak RSS | 6.52–50.62 ms (`0.0–0.2%`) / 87–89 MiB | **3.05–3.29 ms (`0.0%`)** / **61–65 MiB** | 5.26–7.11 ms (`0.0%`) / 45 MiB | **3.25–10.07 ms (`0.0%`)** / 68–69 MiB |
-| **W6b: `list-buckets-100` (Regional run)** | P50 / P90 / P99 | 930.4–942.3 / 961.6–980.6 / 961.6–980.6 ms | **925.5–926.0** / 956.7–985.6 / 956.7–985.6 ms | **921.5–923.2** / 934.5–951.4 / 934.5–951.4 ms | 923.5–948.5 / 976.0–978.3 / 976.0–978.3 ms |
-| | Max / Mean / Rate (`ops/s`) | 976.2–982.0 / 886.5–899.2 ms / **1.11–1.13 ops/s** | 957.4–989.4 / 934.1–947.8 ms / **1.06–1.07 ops/s** | 954.8–1000.7 / 922.8–931.5 ms / **1.07–1.08 ops/s** | 983.7–1122.2 / 937.3–957.4 ms / **1.04–1.07 ops/s** |
-| | CPU ms/op / Peak RSS | 49.55–93.54 ms / 91–98 MiB | **3.48–7.96 ms** / **79–84 MiB** | 9.49–9.57 ms / 48–50 MiB | 8.12–11.51 ms / 82–88 MiB |
-| **W6b: `list-buckets-100` (Zonal run)** | P50 / P90 / P99 | **932.0–943.8** / 967.1–973.9 / 967.1–973.9 ms | **940.1–940.6** / 969.5–980.7 / 969.5–980.7 ms | 939.0–956.0 / 962.7–970.5 / 962.7–970.5 ms | **921.0–941.5** / 961.3–967.7 / 961.3–967.7 ms |
-| | Max / Mean / Rate (`ops/s`) | 987.0–997.5 / 939.3–947.1 ms / **1.06 ops/s** | 1017.1–1090.9 / 948.6–956.0 ms / **1.05 ops/s** | 970.1–987.2 / 935.5–951.1 ms / **1.05–1.07 ops/s** | 976.1–976.6 / 926.7–941.4 ms / **1.06–1.08 ops/s** |
-| | CPU ms/op / Peak RSS | 48.72–62.71 ms / 94–97 MiB | **6.94–7.87 ms** / **81–84 MiB** | 7.01–8.24 ms / 47–49 MiB | **2.76–3.73 ms** / **76–79 MiB** |
+#### Go
 
-> **Notes on Table 1 (Workloads 1–3 & Workload 6 on Regional `us-west1` and Zonal `us-west1-a`):**
-> 1. **Workloads 1–3 on Zonal Rapid (`gs://cpriti-thickthin-poc-zonal-usw1a`, `instance_id=1673808419666104117`):** On an open `BidiReadObject` session, `Go→UDS→Rust gRPC` matches or slightly beats Native Go gRPC on Zonal `us-west1-a`: **`read50x2x4/concurrent`** is **`3.22–3.34 s` (`29.1–29.6 MiB/s`, `3.11–3.34 CPU-s/GiB`)** vs **`3.35–3.39 s` (`29.1–29.3 MiB/s`, `3.58–4.11 CPU-s/GiB`)** for Native Go, **`read50x2x4/serial`** is **`4.30–4.82 s` (`2.63–3.32 CPU-s/GiB`)** vs **`4.13–4.25 s` (`3.56–3.58 CPU-s/GiB`)**, and **`random8k`** is **`35.9–39.0 ms` P50 (`39.5–42.1 ms` P99)** vs **`35.9–36.4 ms` P50 (`39.1–44.9 ms` P99)**. On **`open`** (`-iters=10`), because both clients use 192 gRPC sub-channels (`runtime.NumCPU()` / `available_parallelism()`) on `c4-standard-192`, each of the 10 sequential `Open` calls lands on an un-warmed sub-channel and incurs a cross-region TCP+TLS handshake plus a Zonal `BidiReadObjectRedirectedError` routing redirect (`389.8–392.6 ms` P50 in Native Go vs `983.7–1036.0 ms` P50 in `google-cloud-storage` 1.21, which establishes the redirected tonic channel lazily while using 4× less CPU: `19.12–19.77 ms/op` vs `70.13–82.74 ms/op`). Cloud Monitoring VM telemetry during Zonal Workloads 1–3 (`gcm_w123_zonal_*.json`) recorded **`0.12%` avg / `0.15%` max** VM CPU utilization and **`0.73%` avg / `0.77%` max** VM memory (`state=used`).
-> 2. **Workload 6 (`list100`) Control-Plane Connection Pooling (`option.WithGRPCConnectionPool(1)`):** In `gcs_uds/server/src/service.rs`, the Rust sidecar initializes `StorageControl` with a single gRPC channel (`StorageControl::builder().build()`). Configuring Native Go's control-plane client (`ctrl` in `gothin/cmd/rapid_bench/main.go`) with `option.WithGRPCConnectionPool(1)` instead of `runtime.NumCPU()` (`192` sub-channels on `c4-standard-192`, which previously round-robined each of the 10 sequential `ListObjects` calls onto an un-warmed sub-channel and incurred a ~125 ms TLS handshake on every iteration) brings Native Go gRPC `list-objects-100` P50 from `216–219 ms` down to **`73.6–100.4 ms`** on Regional `us-west1` (vs **`84.8–95.1 ms`** on `Go→UDS→Rust gRPC`, **`8.9–9.4` vs `8.8–9.0 ops/s`**) and **`100.9–104.0 ms`** on Zonal `us-west1-a` (vs **`96.5–101.0 ms`** on `Go→UDS→Rust gRPC`, **`8.3–8.4` vs `8.0–8.5 ops/s`**). Cloud Monitoring VM telemetry during the Workload 6 run (`instance_id=8985621247580806506`, `gcm_w6_list100_*.json`) recorded **`0.13%` avg / `0.14%` max** VM CPU utilization (`compute.googleapis.com/instance/cpu/utilization`) and **`0.70%` avg / `0.72%` max** VM memory (`agent.googleapis.com/memory/percent_used`, `state=used`).
+| **Metric** | **Standard Regional (`us-west1`): Native Go** | **Standard Regional (`us-west1`): `udsthin`** | **Standard Regional `% Diff`** | **Zonal (`us-west1-a`): Native Go** | **Zonal (`us-west1-a`): `udsthin`** | **Zonal `% Diff`** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Latency (P50 / P90 / P99)** | **208.4 ms** / **221.6 ms** / **221.6 ms** | 208.8 ms / 221.7 ms / 221.7 ms | **+0.2% / 0.0% / 0.0%** | **389.8 ms** / **398.8 ms** / **398.8 ms** | 983.7 ms / 1,260.8 ms / 1,260.8 ms | **+152.4% / +216.1% / +216.1%** |
+| **Throughput** | 4.7 ops/s | **5.0 ops/s** | **+6.4%** | **2.6 ops/s** | 1.0 ops/s | **-61.5%** |
+| **CPU Utilization** | **0.41%** | **0.41%** | **0.0%** | **0.12%** | **0.12%** | **0.0%** |
+| **Peak Memory** | **0.76%** | 0.78% | **+2.6%** | **0.77%** | **0.77%** | **0.0%** |
 
----
+### Read50x2x4 Serial (Read 50 ranges of 2 MB with 4 MB stride from a 200 MB object)
 
-### Table 2: Workloads 4 & 5 (Sustained 48-Thread Parallel `BidiRead`, `BidiWrite` & `WriteObject` for 5 Minutes) + Cloud Monitoring VM Metrics
-*48 parallel worker goroutines running continuously for 5 minutes (`-sustained-threads=48 -sustained-dur=5m`) on `c4-standard-192` (`192 vCPUs`, `720 GiB RAM`, `us-central1-b` → Regional `us-west1` and Zonal Rapid `us-west1-a`). Zero protocol fallback: every row compares identical wire protocols.*
+#### Go
 
-| Workload | Bucket & Wire Protocol | Backend | P50 | P90 | P99 | Max | Mean | Aggregate Throughput | Process CPU (`s/GiB` / `ms/op` / `%`) | Process Peak RSS | Cloud Monitoring `instance/cpu/utilization` (avg / max) | Cloud Monitoring `memory/percent_used` (`state=used` avg / max) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **W4: BidiRead 16 MiB chunks (48t, 5m)** | Regional `us-west1` (`BidiReadObject` gRPC) | **Native Go gRPC (`go-grpc-mrd`)** | **544.3 ms** | 616.2 ms | **766.8 ms** | 10.96 s | **563.9 ms** | **1358.4 MiB/s** (`1424.4 MB/s`) | **2.85 s/GiB** / 46.45 ms / **2.0%** | **1855 MiB** | **2.88%** / **3.00%** | **0.97%** / **0.98%** |
-| *(Per-200 MiB object rollup)* | *Regional `us-west1` (`BidiReadObject` gRPC)* | *Native Go gRPC (`bidiread-200m-48t`)* | *6.86 s* | *7.61 s* | *9.08 s* | *41.78 s* | *7.06 s* | *1358.4 MiB/s* | *2.85 s/GiB / 563.81 ms / 2.0%* | *1855 MiB* | *2.88% / 3.00%* | *0.97% / 0.98%* |
-| **W4: BidiRead 16 MiB chunks (48t, 5m)** | Regional `us-west1` (`BidiReadObject` gRPC) | **Go→UDS→Rust gRPC (`go-uds-grpc`)** | 560.3 ms | **612.2 ms** | 771.6 ms | **1.44 s** | 567.6 ms | **1349.0 MiB/s** (`1414.5 MB/s`, **99.3% of native**) | **3.38 s/GiB** / 55.03 ms / **2.3%** | **2822 MiB** | **3.39%** / **3.44%** | **1.45%** / **1.50%** |
-| *(Per-200 MiB object rollup)* | *Regional `us-west1` (`BidiReadObject` gRPC)* | *Go→UDS→Rust gRPC (`bidiread-200m-48t`)* | *7.05 s* | ***7.59 s*** | ***8.19 s*** | ***8.63 s*** | *7.10 s* | *1349.0 MiB/s* | *3.38 s/GiB / 668.31 ms / 2.3%* | *2822 MiB* | *3.39% / 3.44%* | *1.45% / 1.50%* |
-| **W4: BidiRead 16 MiB chunks (48t, 5m)** | **Zonal `us-west1-a` (`BidiReadObject` gRPC)** | **Native Go gRPC (`go-grpc-mrd`)** | 546.3 ms | 605.4 ms | 784.4 ms | 2.50 s | 556.3 ms | **1376.2 MiB/s** (`1443.1 MB/s`) | **2.80 s/GiB** / 45.52 ms / **2.0%** | **1913 MiB** | **2.75%** / **2.85%** | **0.96%** / **0.99%** |
-| *(Per-200 MiB object rollup)* | *Zonal `us-west1-a` (`BidiReadObject` gRPC)* | *Native Go gRPC (`bidiread-200m-48t`)* | *6.83 s* | *7.51 s* | *9.40 s* | *18.03 s* | *6.96 s* | *1376.2 MiB/s* | *2.80 s/GiB / 553.29 ms / 2.0%* | *1913 MiB* | *2.75% / 2.85%* | *0.96% / 0.99%* |
-| **W4: BidiRead 16 MiB chunks (48t, 5m)** | **Zonal `us-west1-a` (`BidiReadObject` gRPC)** | **Go→UDS→Rust gRPC (`go-uds-grpc`)** | **542.0 ms** | **589.6 ms** | **651.3 ms** | **1.39 s** | **543.4 ms** | **1401.4 MiB/s** (`1469.5 MB/s`, **101.8% of native**) | **3.19 s/GiB** / 51.97 ms / **2.3%** | **2846 MiB** | **3.03%** / **3.14%** | **1.49%** / **1.62%** |
-| *(Per-200 MiB object rollup)* | *Zonal `us-west1-a` (`BidiReadObject` gRPC)* | *Go→UDS→Rust gRPC (`bidiread-200m-48t`)* | ***6.81 s*** | ***7.10 s*** | ***7.79 s*** | ***8.73 s*** | ***6.80 s*** | *1401.4 MiB/s* | *3.19 s/GiB / 631.16 ms / 2.3%* | *2846 MiB* | *3.03% / 3.14%* | *1.49% / 1.62%* |
-| **W5: BidiWrite 200 MiB (48t, 5m)** | **Zonal `us-west1-a` (`BidiWriteObject` gRPC)** | **Native Go gRPC (`go-grpc-mrd`, `Append=true`)** | **1.82 s** | **2.28 s** | **2.99 s** | **9.60 s** | **1.84 s** | **5176.6 MiB/s** (`5428.1 MB/s`) | **1.44 s/GiB** / 281.14 ms / **3.8%** | **2629 MiB** | **4.67%** / **5.21%** | **0.99%** / **1.00%** |
-| **W5: BidiWrite 200 MiB (48t, 5m)** | **Zonal `us-west1-a` (`BidiWriteObject` gRPC)** | **Go→UDS→Rust gRPC (`go-uds-grpc`, `open_appendable_object`)** | **2.05 s** | **2.63 s** | **4.18 s** | **14.15 s** | **2.12 s** | **4517.1 MiB/s** (`4736.5 MB/s`, **87.3% of native**) | **2.33 s/GiB** / 455.00 ms / **5.4%** | **15874 MiB** | **6.11%** / **6.69%** | **2.58%** / **2.71%** |
-| **W5: BidiWrite 200 MiB (48t, 5m)** | Regional `us-west1` (`BidiWriteObject` gRPC) | **Native Go gRPC (`go-grpc-mrd`)** | **1.92 s** | **2.53 s** | **4.48 s** | 72.23 s | **2.09 s** | **4153.0 MiB/s** (`4354.7 MB/s`) | **1.37 s/GiB** / 268.05 ms / **2.9%** | **2499 MiB** | **4.16%** / **4.62%** | **1.35%** / **1.45%** |
-| **W5: BidiWrite 200 MiB (48t, 5m)** | Regional `us-west1` (`BidiWriteObject` gRPC) | **Go→UDS→Rust gRPC (`go-uds-grpc`)** | **N/A** | **N/A** | **N/A** | **N/A** | **N/A** | **N/A** *(Rust SDK `BidiWriteObject` is Zonal/appendable-only)* | **N/A** | **N/A** | **N/A** | **N/A** |
-| **W5: WriteObject 200 MiB (48t, 5m)** | **Regional `us-west1` (`WriteObject` JSON)** | **Native Go JSON (`go-json-range`, default HTTP/2)** | 42.37 s | 43.74 s | 44.67 s | 46.38 s | 42.06 s | **227.1 MiB/s** (`238.1 MB/s`) | 5.67 s/GiB / 1106.81 ms / **0.7%** | **2035 MiB** | **0.90%** / **1.10%** | **0.89%** / **0.92%** |
-| **W5: WriteObject 200 MiB (48t, 5m)** | **Regional `us-west1` (`WriteObject` JSON)** | **Go→UDS→Rust JSON (`go-uds-json`, HTTP/1.1 pool)** | **6.54 s** | **7.40 s** | **8.70 s** | **21.94 s** | **6.73 s** | **1402.4 MiB/s** (`1470.5 MB/s`, **6.2× faster**) | **1.57 s/GiB** / 306.25 ms / **1.1%** | **18490 MiB** | **1.50%** / **1.54%** | **3.21%** / **3.26%** |
+| **Metric** | **Standard Regional (`us-west1`): Native Go** | **Standard Regional (`us-west1`): `udsthin`** | **Standard Regional `% Diff`** | **Zonal (`us-west1-a`): Native Go** | **Zonal (`us-west1-a`): `udsthin`** | **Zonal `% Diff`** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Latency (P50 / P90 / P99)** | **4.17 s** / **4.27 s** / **4.27 s** | 4.40 s / 4.45 s / 4.45 s | **+5.5% / +4.2% / +4.2%** | **4.25 s** / 4.37 s / 4.37 s | 4.30 s / **4.30 s** / **4.30 s** | **+1.2% / -1.6% / -1.6%** |
+| **Throughput** | **24.3 MB/s** | 23.7 MB/s | **-2.6%** | **24.2 MB/s** | 23.8 MB/s | **-1.7%** |
+| **CPU Utilization** | **0.41%** | **0.41%** | **0.0%** | **0.12%** | **0.12%** | **0.0%** |
+| **Peak Memory** | **0.76%** | 0.78% | **+2.6%** | **0.77%** | **0.77%** | **0.0%** |
 
-> **Key Takeaways on Workload 5 (`BidiWriteObject` in gRPC vs `WriteObject` in JSON):**
-> 1. **Zonal gRPC `BidiWriteObject` (`us-west1-a`):** When both SDKs stream over gRPC `BidiWriteObject` (`Writer.Append=true` in Go vs `open_appendable_object` in Rust), `Go→UDS→Rust gRPC` achieves **`4517.1 MiB/s`** (`37.9 Gbps`) vs **`5176.6 MiB/s`** (`43.4 Gbps`) for Native Go (**87.3% throughput parity**, P50 `2.05 s` vs `1.82 s`). Peak RSS on the Rust sidecar is `15,874 MiB` (`2.58%` VM RAM) because `google-cloud-storage` 1.21's `AppendableObjectWriter` maintains an in-memory unacknowledged chunk `ReplayBuffer` + `CoalescingBuffer` per concurrent writer across 48 parallel 200 MiB streams.
-> 2. **Regional gRPC `BidiWriteObject` (`us-west1`):** Marked **`N/A`** for `Go→UDS→Rust gRPC` because `google-cloud-storage` 1.21.0 only exposes gRPC `BidiWriteObject` via `open_appendable_object` (Zonal buckets only; regional buckets return `UNIMPLEMENTED`).
-> 3. **Regional JSON `WriteObject` (`us-west1`):** Comparing JSON-to-JSON directly, `Go→UDS→Rust JSON` (`1402.4 MiB/s`, P50 `6.54 s`, `1.57 CPU-s/GiB`) is **6.2× faster** than Native Go's default JSON client (`227.1 MiB/s`, P50 `42.37 s`, `5.67 CPU-s/GiB`), because Go's default `http.Transport` multiplexes all 48 concurrent uploads onto a single HTTP/2 TCP connection (hitting single-socket flow-control/BDP limits), whereas Rust's `reqwest` HTTP/1.1 pool opens 48 parallel TCP connections.
+### Read50x2x4 Concurrent (Read 50 ranges of 2 MB with 4 MB stride from a 200 MB object)
 
----
+#### Go
 
-### Table 3: 128 MiB Sequential W1R3 (Regional `us-west1` & Zonal `us-west1-a`) & Zero-Copy Shared-Memory (`memfd` + `SCM_RIGHTS` + `mmap`) on `c4-standard-192`
+| **Metric** | **Standard Regional (`us-west1`): Native Go** | **Standard Regional (`us-west1`): `udsthin`** | **Standard Regional `% Diff`** | **Zonal (`us-west1-a`): Native Go** | **Zonal (`us-west1-a`): `udsthin`** | **Zonal `% Diff`** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Latency (P50 / P90 / P99)** | 3.42 s / 3.47 s / 3.47 s | **3.38 s** / **3.45 s** / **3.45 s** | **-1.2% / -0.6% / -0.6%** | 3.35 s / 3.44 s / 3.44 s | **3.22 s** / **3.32 s** / **3.32 s** | **-3.9% / -3.5% / -3.5%** |
+| **Throughput** | 30.5 MB/s | **30.7 MB/s** | **+0.7%** | 30.5 MB/s | **31.0 MB/s** | **+1.7%** |
+| **CPU Utilization** | **0.41%** | **0.41%** | **0.0%** | **0.12%** | **0.12%** | **0.0%** |
+| **Peak Memory** | **0.76%** | 0.78% | **+2.6%** | **0.77%** | **0.77%** | **0.0%** |
 
-**128 MiB Sequential Write & Read (`whole` & `32k` with Tuned HTTP/2 Windows & 8 MiB UDS Buffers):**
+### Random8K (Read 2,000 random 8 KiB ranges from an open 100 MB object)
 
-| Style (128 MiB) | Metric | Regional Native `go-json-h1` | Regional Go→UDS→Rust JSON (`go-uds-json`) | Regional Native `go-grpc-cp` | Regional Go→UDS→Rust gRPC (`go-uds-grpc`) | **Zonal (`us-west1-a`) Native `go-grpc-cp-append`** | **Zonal (`us-west1-a`) Go→UDS→Rust gRPC (`go-uds-grpc`)** |
-|---|---|---|---|---|---|---|---|
-| **`whole`** | Write P50 / P90 / P99 | 4.65 / 4.93 / 4.93 s (`27.5 MiB/s`) | 4.70 / 5.01 / 5.01 s (`27.2 MiB/s`) | 1.79 / 2.49 / 2.49 s (`71.4 MiB/s`) | **N/A** *(Zonal-only in Rust SDK)* | **1.76 / 2.14 / 2.14 s (`72.8 MiB/s`)** | **1.79 / 2.27 / 2.27 s (`71.5 MiB/s`, 98.2% parity)** |
-| **`whole`** | Read P50 / P90 / P99 | 1.46 / 1.59 / 1.69 s (`87.7 MiB/s`) | **1.39 / 1.61 / 1.68 s (`92.1 MiB/s`)** | 4.41 / 4.51 / 4.95 s (`29.0 MiB/s`) | **4.37 / 4.49 / 4.54 s (`29.3 MiB/s`)** | 4.66 / 4.99 / 5.10 s (`27.5 MiB/s`) | 5.19 / 5.54 / 6.85 s (`24.7 MiB/s`) |
-| **`whole`** | CPU s/GiB / Peak RSS | **1.59 s/GiB** / 476 MiB | **2.44 s/GiB** / 698 MiB | 2.70 s/GiB / 542 MiB | **2.31 s/GiB** / 639 MiB | 3.19 s/GiB / 535 MiB | **2.80 s/GiB** / 709 MiB |
-| **`32k`** | Write P50 / Read P50 | 4.34 s / 1.31 s (`97.7 MiB/s`) | **4.27 s / 1.31 s (`97.8 MiB/s`)** | 2.33 s / 4.38 s (`29.2 MiB/s`) | **N/A** / **4.30 s (`29.8 MiB/s`)** | 1.85 s (`69.2 MiB/s`) / 4.55 s (`28.1 MiB/s`) | **1.57 s (`81.3 MiB/s`, 17.5% faster!)** / 5.00 s (`25.6 MiB/s`) |
-| **`32k`** | CPU s/GiB / Peak RSS | **1.48 s/GiB** / 349 MiB | **2.34 s/GiB** / 890 MiB | 2.67 s/GiB / 436 MiB | **2.34 s/GiB** / 841 MiB | 3.27 s/GiB / 412 MiB | **2.89 s/GiB** / 1001 MiB |
+#### Go
 
-**Shared-Memory (`ReadObjectShm`: `memfd` + `SCM_RIGHTS` + `mmap`) vs Tuned gRPC Chunks (128 MiB Read):**
+| **Metric** | **Standard Regional (`us-west1`): Native Go** | **Standard Regional (`us-west1`): `udsthin`** | **Standard Regional `% Diff`** | **Zonal (`us-west1-a`): Native Go** | **Zonal (`us-west1-a`): `udsthin`** | **Zonal `% Diff`** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Latency (P50 / P90 / P99)** | **38.5 ms** / **40.4 ms** / **44.1 ms** | 40.8 ms / 44.7 ms / 48.7 ms | **+6.0% / +10.6% / +10.4%** | **35.9 ms** / 39.2 ms / 44.9 ms | **35.9 ms** / **39.0 ms** / **39.5 ms** | **0.0% / -0.5% / -12.0%** |
+| **Throughput** | **0.21 MB/s** (`25.7 ops/s`) | **0.21 MB/s** (`24.4 ops/s`) | **0.0%** (`-5.1% ops/s`) | **0.21 MB/s** (`27.2 ops/s`) | **0.21 MB/s** (`27.2 ops/s`) | **0.0%** |
+| **CPU Utilization** | **0.41%** | **0.41%** | **0.0%** | **0.12%** | **0.12%** | **0.0%** |
+| **Peak Memory** | **0.76%** | 0.78% | **+2.6%** | **0.77%** | **0.77%** | **0.0%** |
 
-| Data Plane Mode | JSON Read P50 / Throughput | JSON CPU s/GiB (Go + Sidecar) | gRPC Read P50 / Throughput | gRPC CPU s/GiB (Go + Sidecar) |
-|---|---|---|---|---|
-| **Tuned gRPC chunks over UDS** (copy into caller `p`) | 1.556 s (`82.3 MiB/s`) | **2.41 s/GiB** (Go `0.63` + sidecar `1.78`) | 4.467 s (`28.7 MiB/s`) | **2.47 s/GiB** (Go `0.63` + sidecar `1.84`) |
-| **`ReadObjectShm` (`memfd`)** (copy into caller `p`) | **1.477 s (`86.6 MiB/s`)** | **1.32 s/GiB** (Go `0.11` + sidecar `1.21`) | 4.831 s (`26.5 MiB/s`) | **1.57 s/GiB** (Go `0.14` + sidecar `1.44`) |
-| **`ReadObjectShm` (`memfd`)** (zero-copy loaned slice) | **1.488 s (`86.0 MiB/s`)** | **1.16 s/GiB** (Go **`0.00`** + sidecar `1.15`) | **4.430 s (`28.9 MiB/s`)** | **1.46 s/GiB** (Go **`0.01`** + sidecar `1.45`) |
+### Read 16 MB chunks of 200 MB via BidiRead on 48 Parallel threads and try to saturate the NIC, run workload for 5 mins.
+
+#### Go
+
+| **Metric** | **Standard Regional (`us-west1`): Native Go** | **Standard Regional (`us-west1`): `udsthin`** | **Standard Regional `% Diff`** | **Zonal (`us-west1-a`): Native Go** | **Zonal (`us-west1-a`): `udsthin`** | **Zonal `% Diff`** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Latency (P50 / P90 / P99)** | **544.3 ms** / 616.2 ms / **766.8 ms** | 560.3 ms / **612.2 ms** / 771.6 ms | **+2.9% / -0.6% / +0.6%** | 546.3 ms / 605.4 ms / 784.4 ms | **542.0 ms** / **589.6 ms** / **651.3 ms** | **-0.8% / -2.6% / -17.0%** |
+| **Throughput** | **1,424.4 MB/s** | 1,414.5 MB/s | **-0.7%** | 1,443.1 MB/s | **1,469.5 MB/s** | **+1.8%** |
+| **CPU Utilization** | **2.88%** | 3.39% | **+17.7%** | **2.75%** | 3.03% | **+10.2%** |
+| **Peak Memory** | **0.98%** | 1.50% | **+53.1%** | **0.99%** | 1.62% | **+63.6%** |
+
+### Write 200 MB objects via BidiWrite on 48 Parallel threads and try to saturate the NIC, run workload for 5 mins.
+
+*Note: Standard Regional is **N/A** for `udsthin` on `BidiWriteObject` because `google-cloud-storage` (Rust) only supports `BidiWriteObject` via `open_appendable_object` on Zonal buckets.*
+
+#### Go
+
+| **Metric** | **Native Go** | **`udsthin`** | **`% Diff` (`udsthin` vs. Native)** |
+| --- | --- | --- | --- |
+| **Latency (P50 / P90 / P99)** | **1.82 s** / **2.28 s** / **2.99 s** | 2.05 s / 2.63 s / 4.18 s | **+12.6% / +15.4% / +39.8%** |
+| **Throughput** | **5,428.1 MB/s** (`5,176.6 MiB/s`) | **4,736.5 MB/s** (`4,517.1 MiB/s`) | **-12.7%** (`87.3%` of Native) |
+| **CPU Utilization** | **4.67%** | 6.11% | **+30.8%** |
+| **Peak Memory** | **1.00%** | 2.71% | **+171.0%** |
+
+### Perform List Bucket and List Object for 100 items
+
+#### Go
+
+| **Operation & Metric** | **Standard Regional gRPC: Native Go** | **Standard Regional gRPC: `udsthin`** | **Standard Regional `% Diff`** | **Zonal gRPC: Native Go** | **Zonal gRPC: `udsthin`** | **Zonal `% Diff`** |
+| --- | --- | --- | --- | --- | --- | --- |
+| **`ListObject` Latency (P50 / P90 / P99)** | **87.0 ms** / 139.1 ms / 139.1 ms | 90.0 ms / **130.5 ms** / **130.5 ms** | **+3.4% / -6.2% / -6.2%** | 102.4 ms / 136.2 ms / 136.2 ms | **98.8 ms** / **131.9 ms** / **131.9 ms** | **-3.5% / -3.2% / -3.2%** |
+| **`ListObject` Throughput** | **9.1 ops/s** | 8.9 ops/s | **-2.2%** | **8.3 ops/s** | 8.2 ops/s | **-1.2%** |
+| **`ListBucket` Latency (P50 / P90 / P99)** | 936.4 ms / **971.1 ms** / **971.1 ms** | **925.8 ms** / 971.2 ms / 971.2 ms | **-1.1% / 0.0% / 0.0%** | **937.9 ms** / **970.5 ms** / **970.5 ms** | 940.4 ms / 975.1 ms / 975.1 ms | **+0.3% / +0.5% / +0.5%** |
+| **`ListBucket` Throughput** | **1.12 ops/s** | 1.06 ops/s | **-5.4%** | **1.06 ops/s** | 1.05 ops/s | **-0.9%** |
+| **CPU Utilization** | **0.13%** | **0.13%** | **0.0%** | **0.13%** | **0.13%** | **0.0%** |
+| **Peak Memory** | **0.72%** | **0.72%** | **0.0%** | **0.72%** | **0.72%** | **0.0%** |
 
 ---
 
-### Visual Comparison Graphs (Native Go vs. Go→UDS→Rust)
+### Visual Comparison Graphs (Native Go vs. `udsthin`)
 
 ![Graph 1: Throughput & Latency Across Workloads and Buckets](./docs/graph1_throughput_latency_comparison.png)
 
 ![Graph 2: CPU Efficiency & Zero-Copy Shared Memory (memfd)](./docs/graph2_cpu_and_shm_zerocopy.png)
 
-![Graph 3: Memory Footprint (Peak RSS) & Cloud Monitoring VM Telemetry](./docs/graph3_memory_and_vm_telemetry.png)
+![Graph 3: Cloud Monitoring CPU Utilization (%) & Peak Memory (%)](./docs/graph3_memory_and_vm_telemetry.png)
 
 ---
 
@@ -167,7 +157,8 @@
     - `client.go` — `Client`, `Options`, `NewClient`, `Close`, `BucketHandle`,
       `ObjectHandle`, gRPC/UDS dialer & error mapping.
     - `reader.go` — `Reader` (`NewReader`, `NewRangeReader`, `Read`, `Remain`,
-      `Close`) and `Opened` (`Open`, `ReadAt`, `Close` for multi-range/zonal).
+      `Close`), `Opened` (`Open`, `ReadAt`, `Close`), and `MultiRangeDownloader`
+      (`NewMultiRangeDownloader`, `Add`, `Wait`, `Close`).
     - `writer.go` — `Writer` (`NewWriter`, `Write`, `Close`, `Attrs`) with
       2 MiB client-stream chunking.
     - `list.go` — `ObjectIterator` (`Objects`, `Next`, `PageInfo`) and `BucketIterator` (`Buckets`).
@@ -197,10 +188,6 @@
   `ping`, `session-tests`, `shm`, `hijack` subcommands on the UDS one).
 - `vm_uds5_worklog.sh`, `vm_uds2.sh`, `vm_uds3.sh`, `vm_uds4.sh` — GCE startup scripts
   used for the published numbers; `gothin/results/` — raw logs & Cloud Monitoring JSON.
-
-`gothin` is its own Go module (`poc/gothin`); nothing here is imported by the
-real SDK. The embedded sidecar file `gothin/udsthin/bin/gcs-core-server-linux-amd64`
-is empty in git; the build pipeline copies the static musl build in.
 
 ---
 
