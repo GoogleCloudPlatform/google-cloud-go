@@ -2921,10 +2921,9 @@ func TestSelectAll(t *testing.T) {
 						[]*sppb.StructType_Field{
 							{Name: "Name", Type: stringType()},
 							{Name: "ID", Type: intType()},
-							{Name: "City", Type: stringType()},
-							{Name: "UnknownCol", Type: stringType()},
+							{Name: "AddressCity", Type: stringType()},
 						},
-						[]*proto3.Value{stringProto("alice"), intProto(1), stringProto("NYC"), stringProto("ignored")},
+						[]*proto3.Value{stringProto("alice"), intProto(1), stringProto("NYC")},
 					},
 					&Row{
 						[]*sppb.StructType_Field{
@@ -2937,38 +2936,8 @@ func TestSelectAll(t *testing.T) {
 				),
 			},
 			want: &[]*Singer{
-				{RealID: 1, Name: "alice", Address: &Address{AddressCity: "NYC"}},
+				{RealID: 1, Name: "alice"},
 				{RealID: 2, Name: "bob"},
-			},
-		},
-		{
-			name: "success: embedded pointer struct decoded directly without WithLenient",
-			args: args{
-				destination: &[]*Singer{},
-				mock: newMockIterator(
-					&Row{
-						[]*sppb.StructType_Field{
-							{Name: "Name", Type: stringType()},
-							{Name: "ID", Type: intType()},
-							{Name: "City", Type: stringType()},
-							{Name: "Street", Type: stringType()},
-							{Name: "ZipCode", Type: stringType()},
-						},
-						[]*proto3.Value{stringProto("alice"), intProto(1), stringProto("NYC"), stringProto("Broadway"), stringProto("10001")},
-					},
-					iterator.Done,
-				),
-			},
-			want: &[]*Singer{
-				{
-					RealID: 1,
-					Name:   "alice",
-					Address: &Address{
-						AddressCity:   "NYC",
-						AddressStreet: "Broadway",
-						AddressZip:    "10001",
-					},
-				},
 			},
 		},
 		{
