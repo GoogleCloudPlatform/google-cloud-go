@@ -396,6 +396,12 @@ func TestCheckoutSession_ParkedWaiter_DeadlineExceeded(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v (type %T), want unwrappable to context.DeadlineExceeded (was the ctx cause dropped?)", err, err)
 	}
+	if got := status.Code(err); got != codes.DeadlineExceeded {
+		t.Errorf("status.Code(err) = %v, want codes.DeadlineExceeded", got)
+	}
+	if got := ClassifyErr(err).State; got != StateUncommitted {
+		t.Errorf("ClassifyErr(err).State = %v, want StateUncommitted", got)
+	}
 	// Positive proof we parked (independent of timing).
 	select {
 	case <-parked:
