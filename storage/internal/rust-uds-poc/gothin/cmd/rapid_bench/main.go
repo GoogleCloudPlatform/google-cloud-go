@@ -29,6 +29,7 @@ import (
 
 type nativeOpener struct {
 	c      *storage.Client
+	ctrl   *storage.Client
 	append bool
 }
 
@@ -57,7 +58,11 @@ func (n nativeOpener) WriteObject(ctx context.Context, bucket, object string, da
 	return w.Close()
 }
 func (n nativeOpener) ListObjectsN(ctx context.Context, bucket, prefix string, limit int) (int, error) {
-	it := n.c.Bucket(bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	cli := n.ctrl
+	if cli == nil {
+		cli = n.c
+	}
+	it := cli.Bucket(bucket).Objects(ctx, &storage.Query{Prefix: prefix})
 	cnt := 0
 	for cnt < limit {
 		_, err := it.Next()
@@ -72,7 +77,11 @@ func (n nativeOpener) ListObjectsN(ctx context.Context, bucket, prefix string, l
 	return cnt, nil
 }
 func (n nativeOpener) ListBucketsN(ctx context.Context, project string, limit int) (int, error) {
-	it := n.c.Buckets(ctx, project)
+	cli := n.ctrl
+	if cli == nil {
+		cli = n.c
+	}
+	it := cli.Buckets(ctx, project)
 	cnt := 0
 	for cnt < limit {
 		_, err := it.Next()
@@ -299,7 +308,11 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		rapid.Run("go-grpc-mrd", nativeOpener{c: c, append: os.Getenv("ZONAL") == "1"})
+		ctrl, err := storage.NewGRPCClient(ctx, storage.WithDisabledClientMetrics(), option.WithGRPCConnectionPool(1))
+		if err != nil {
+			panic(err)
+		}
+		rapid.Run("go-grpc-mrd", nativeOpener{c: c, ctrl: ctrl, append: os.Getenv("ZONAL") == "1"})
 	case "native-json":
 		c, err := storage.NewClient(ctx)
 		if err != nil {

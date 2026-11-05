@@ -58,6 +58,11 @@ var (
 // (e.g. to set storage.Writer.Append for zonal buckets).
 var ConfigureWriter func(w any)
 
+// ListObjects, if set, overrides c.Bucket(b).Objects(ctx, q) for the list loop
+// (e.g. so bench2_native in gRPC mode uses a 1-channel control client matching
+// Rust's single-channel StorageControl).
+var ListObjects func(ctx context.Context, bucket string, q *storage.Query) Iter
+
 // --- stats ----------------------------------------------------------------
 
 type stats struct {
@@ -301,7 +306,12 @@ func Run[C Client[B, O, R, W, I], B Bucket[O, R, W, I], O Object[R, W], R Reader
 	for i := 0; i < *listIters; i++ {
 		f0 := ffi()
 		t := time.Now()
-		it := c.Bucket(*bucket).Objects(ctx, &storage.Query{Prefix: *listPrefix})
+		var it Iter
+		if ListObjects != nil {
+			it = ListObjects(ctx, *bucket, &storage.Query{Prefix: *listPrefix})
+		} else {
+			it = c.Bucket(*bucket).Objects(ctx, &storage.Query{Prefix: *listPrefix})
+		}
 		cnt = 0
 		for {
 			_, err := it.Next()

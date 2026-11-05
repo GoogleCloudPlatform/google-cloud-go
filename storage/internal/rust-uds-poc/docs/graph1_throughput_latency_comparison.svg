@@ -82,10 +82,10 @@
 <text x="785.5" y="405.8" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">215ms</text>
 <text x="764.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W1: open</text>
 <text x="764.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Reg gRPC)</text>
-<rect x="835.0" y="410.7" width="35.0" height="12.3" rx="2" fill="#1A73E8"/>
-<text x="852.5" y="405.7" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">218ms</text>
-<rect x="878.0" y="418.0" width="35.0" height="5.0" rx="2" fill="#00897B"/>
-<text x="895.5" y="413.0" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">89ms</text>
+<rect x="835.0" y="418.1" width="35.0" height="4.9" rx="2" fill="#1A73E8"/>
+<text x="852.5" y="413.1" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">87ms</text>
+<rect x="878.0" y="417.9" width="35.0" height="5.1" rx="2" fill="#00897B"/>
+<text x="895.5" y="412.9" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">90ms</text>
 <text x="874.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W6a: list-100</text>
 <text x="874.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Reg gRPC)</text>
 <rect x="945.0" y="340.5" width="35.0" height="82.5" rx="2" fill="#1A73E8"/>

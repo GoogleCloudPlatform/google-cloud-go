@@ -45,6 +45,18 @@ func main() {
 			storage.WithGRPCBidiReads(),
 			storage.WithDisabledClientMetrics(),
 			option.WithGRPCConnectionPool(runtime.NumCPU()))
+		if err != nil {
+			panic(err)
+		}
+		ctrl, err := storage.NewGRPCClient(ctx,
+			storage.WithDisabledClientMetrics(),
+			option.WithGRPCConnectionPool(1))
+		if err != nil {
+			panic(err)
+		}
+		bench2.ListObjects = func(ctx context.Context, bucket string, q *storage.Query) bench2.Iter {
+			return ctrl.Bucket(bucket).Objects(ctx, q)
+		}
 		if os.Getenv("NATIVE_APPEND") == "1" { // zonal buckets: appendable BidiWrite
 			name = "go-grpc-cp-append"
 			bench2.ConfigureWriter = func(w any) {
