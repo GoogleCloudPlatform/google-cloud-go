@@ -2185,13 +2185,10 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 		pollInterval = 100 * time.Millisecond
 	}
 	dropDeadline := time.Now().Add(90 * time.Second)
-	consecutiveNotFound := 0
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
 	// Wait for the drop to propagate across all channels and GFE backends.
 	// We run multiple queries concurrently to ensure we hit as many AFE backends as possible.
-	consecutiveNotFound := 0
-	ticker := time.NewTicker(pollInterval)
+	consecutiveNotFound = 0
+	ticker = time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
 		// Spawn 20 concurrent queries to force GFE to route across different AFE tasks.
