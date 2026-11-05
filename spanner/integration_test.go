@@ -2185,32 +2185,60 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 		pollInterval = 100 * time.Millisecond
 	}
 	dropDeadline := time.Now().Add(90 * time.Second)
+	// Wait for the drop to propagate across all channels and GFE backends.
+	// We run multiple queries concurrently to ensure we hit as many AFE backends as possible.
 	consecutiveNotFound := 0
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	for {
-		iter := client.Single().Query(ctx, Statement{SQL: "SELECT SingerId FROM Singers"})
-		_, err := iter.Next()
-		iter.Stop()
-		if err != nil && err != iterator.Done {
-			if got := ErrCode(err); got == codes.NotFound && strings.Contains(err.Error(), "Database not found") {
-				consecutiveNotFound++
-				if consecutiveNotFound >= minConsecutiveNotFound && time.Since(dropTime) >= minPostDropPropagation {
-					t.Logf("DropDatabase propagated across all channels after %v (%d consecutive NotFound errors)", time.Since(dropTime).Round(time.Millisecond), consecutiveNotFound)
-					break
+		// Spawn 20 concurrent queries to force GFE to route across different AFE tasks.
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		var lastErr error
+		var hasSuccess bool
+		var loopNotFound int
+
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				iter := client.Single().Query(ctx, Statement{SQL: "SELECT SingerId FROM Singers"})
+				_, err := iter.Next()
+				iter.Stop()
+
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil && err != iterator.Done {
+					if got := ErrCode(err); got == codes.NotFound && strings.Contains(err.Error(), "Database not found") {
+						loopNotFound++
+					} else {
+						lastErr = err
+					}
+				} else {
+					hasSuccess = true
 				}
-			} else {
-				t.Logf("Query after drop returned unexpected error (resetting counter): %v", err)
-				consecutiveNotFound = 0
-			}
-		} else {
+			}()
+		}
+		wg.Wait()
+
+		if hasSuccess {
 			if consecutiveNotFound > 0 {
 				t.Logf("Query after drop succeeded on a channel with stale cache after %d NotFound errors; resetting counter", consecutiveNotFound)
 			}
 			consecutiveNotFound = 0
+		} else if lastErr != nil {
+			t.Logf("Query after drop returned unexpected error (resetting counter): %v", lastErr)
+			consecutiveNotFound = 0
+		} else {
+			consecutiveNotFound += loopNotFound
+			if consecutiveNotFound >= minConsecutiveNotFound && time.Since(dropTime) >= minPostDropPropagation {
+				t.Logf("DropDatabase propagated across all channels after %v (%d consecutive NotFound errors)", time.Since(dropTime).Round(time.Millisecond), consecutiveNotFound)
+				break
+			}
 		}
+
 		if time.Now().After(dropDeadline) {
-			t.Fatalf("timeout (90s) waiting for %d consecutive Database not found errors after drop (got %d, last err: %v)", minConsecutiveNotFound, consecutiveNotFound, err)
+			t.Fatalf("timeout (90s) waiting for %d consecutive Database not found errors after drop (got %d)", minConsecutiveNotFound, consecutiveNotFound)
 		}
 		select {
 		case <-ctx.Done():
