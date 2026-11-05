@@ -2238,7 +2238,7 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 		}
 
 		if time.Now().After(dropDeadline) {
-			t.Fatalf("timeout (90s) waiting for %d consecutive Database not found errors after drop (got %d)", minConsecutiveNotFound, consecutiveNotFound)
+			t.Fatalf("timeout (90s) waiting for %d consecutive Database not found errors after drop (got %d, last err: %v)", minConsecutiveNotFound, consecutiveNotFound, lastErr)
 		}
 		select {
 		case <-ctx.Done():
