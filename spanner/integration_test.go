@@ -536,7 +536,7 @@ func initIntegrationTests() (cleanup func()) {
 	if omniConfig.endpoint != "" {
 		opts = append(opts, option.WithEndpoint(omniConfig.endpoint))
 		databaseAdmin, err = database.NewDatabaseAdminClientWithConfig(ctx, omniConnectionConfig(), opts...)
-	} else if lastErr == nil {
+	} else {
 		// Create InstanceAdmin and DatabaseAdmin clients.
 		instanceAdmin, err = instance.NewInstanceAdminClient(ctx, opts...)
 		if err != nil {
@@ -555,7 +555,7 @@ func initIntegrationTests() (cleanup func()) {
 	var configName string
 	if instanceConfig != "" {
 		configName = fmt.Sprintf("projects/%s/instanceConfigs/%s", testProjectID, instanceConfig)
-	} else if lastErr == nil {
+	} else {
 		// Get the list of supported instance configs for the project that is used
 		// for the integration tests. The supported instance configs can differ per
 		// project. The integration tests will use the first instance config that
@@ -1193,7 +1193,7 @@ func TestIntegration_BatchWrite(t *testing.T) {
 		for _, idx := range res.GetIndexes() {
 			if idx >= 0 && idx < int32(numMutationGroups) {
 				seen[idx]++
-			} else if lastErr == nil {
+			} else {
 				t.Fatalf("Index %v out of range. Expected range [%v,%v]", idx, 0, numMutationGroups-1)
 			}
 		}
@@ -1628,7 +1628,7 @@ func TestIntegration_ReadWriteTransaction(t *testing.T) {
 			if e != nil {
 				return e
 			}
-		} else if lastErr == nil {
+		} else {
 			bb, e = readBalance(tx.ReadUsingIndex(ctx, "Accounts", "AccountByNickname", KeySets(Key{"Bar"}), []string{"Balance"}))
 			if e != nil {
 				return e
@@ -2185,6 +2185,9 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 		pollInterval = 100 * time.Millisecond
 	}
 	dropDeadline := time.Now().Add(90 * time.Second)
+	consecutiveNotFound := 0
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
 	// Wait for the drop to propagate across all channels and GFE backends.
 	// We run multiple queries concurrently to ensure we hit as many AFE backends as possible.
 	consecutiveNotFound := 0
@@ -2209,10 +2212,9 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 				defer mu.Unlock()
 				if err != nil && err != iterator.Done {
 					if got := ErrCode(err); got != codes.NotFound || !strings.Contains(err.Error(), "Database not found") {
-					} else if lastErr == nil {
 						lastErr = err
 					}
-				} else if lastErr == nil {
+				} else {
 					hasSuccess = true
 				}
 			}()
@@ -2227,7 +2229,7 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 		} else if lastErr != nil {
 			t.Logf("Query after drop returned unexpected error (resetting counter): %v", lastErr)
 			consecutiveNotFound = 0
-		} else if lastErr == nil {
+		} else {
 			consecutiveNotFound++
 			if consecutiveNotFound >= minConsecutiveNotFound && time.Since(dropTime) >= minPostDropPropagation {
 				t.Logf("DropDatabase propagated across all channels after %v (%d consecutive NotFound batches)", time.Since(dropTime).Round(time.Millisecond), consecutiveNotFound)
@@ -2350,7 +2352,7 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 			if !strings.Contains(errStr, "Session not found") {
 				t.Errorf("attempt %d: expected error to indicate 'Session not found' on emulator, got %v", attempt, err)
 			}
-		} else if lastErr == nil {
+		} else {
 			if !strings.Contains(errStr, "Database not found") {
 				t.Errorf("attempt %d: expected error to indicate 'Database not found', got %v", attempt, err)
 			}
@@ -3697,7 +3699,7 @@ func TestIntegration_QueryWithRoles(t *testing.T) {
 			`GRANT SELECT(SingerId, FirstName) ON TABLE Singers TO singers_unauthorized`,
 			`GRANT SELECT(SingerId, FirstName, LastName) ON TABLE Singers TO singers_reader_revoked`,
 			`REVOKE SELECT(LastName) ON TABLE Singers FROM singers_reader_revoked`)
-	} else if lastErr == nil {
+	} else {
 		stmts = append(stmts,
 			`CREATE TABLE Singers (
 					SingerId	INT64 NOT NULL,
@@ -3832,7 +3834,7 @@ func TestIntegration_ReadWithRoles(t *testing.T) {
 			`GRANT SELECT(SingerId, FirstName) ON TABLE Singers TO singers_unauthorized`,
 			`GRANT SELECT(SingerId, FirstName, LastName) ON TABLE Singers TO singers_reader_revoked`,
 			`REVOKE SELECT(LastName) ON TABLE Singers FROM singers_reader_revoked`)
-	} else if lastErr == nil {
+	} else {
 		stmts = append(stmts,
 			`CREATE TABLE Singers (
 					SingerId	INT64 NOT NULL,
@@ -3961,7 +3963,7 @@ func TestIntegration_DMLWithRoles(t *testing.T) {
 			`GRANT SELECT(SingerId), UPDATE(FirstName) ON TABLE Singers TO singers_unauthorized`,
 			`GRANT INSERT(SingerId, FirstName, LastName) ON TABLE Singers TO singers_creator`,
 			`GRANT SELECT(SingerId), DELETE ON TABLE Singers TO singers_deleter`)
-	} else if lastErr == nil {
+	} else {
 		stmts = append(stmts,
 			`CREATE TABLE Singers (
 					SingerId	INT64 NOT NULL,
@@ -4126,7 +4128,7 @@ func TestIntegration_MutationWithRoles(t *testing.T) {
 			`GRANT SELECT(SingerId), UPDATE(SingerId, FirstName) ON TABLE Singers TO singers_unauthorized`,
 			`GRANT INSERT(SingerId, FirstName, LastName) ON TABLE Singers TO singers_creator`,
 			`GRANT SELECT(SingerId), DELETE ON TABLE Singers TO singers_deleter`)
-	} else if lastErr == nil {
+	} else {
 		stmts = append(stmts,
 			`CREATE TABLE Singers (
 					SingerId	INT64 NOT NULL,
@@ -4574,7 +4576,7 @@ func TestIntegration_CommitTimestamp(t *testing.T) {
 	} {
 		if r, e := txn.ReadRow(ctx, "TestTable", Key{it.k}, []string{"Ts"}); e != nil {
 			t.Fatal(err)
-		} else if lastErr == nil {
+		} else {
 			var got testTableRow
 			if err := r.ToStruct(&got); err != nil {
 				t.Fatal(err)
@@ -5099,7 +5101,7 @@ func TestIntegration_BatchDML_NoStatements(t *testing.T) {
 		if s.Code() != codes.InvalidArgument {
 			t.Fatalf("expected InvalidArgument, got %v", err)
 		}
-	} else if lastErr == nil {
+	} else {
 		t.Fatalf("expected InvalidArgument, got %v", err)
 	}
 }
@@ -5749,7 +5751,7 @@ func TestIntegration_Foreign_Key_Delete_Cascade_Action(t *testing.T) {
 				if !compareErrors(gotErr, tt.wantErr) {
 					t.Errorf("error mismatch\n Got: %v\nWant: %v", gotErr, tt.wantErr)
 				}
-			} else if lastErr == nil {
+			} else {
 				tt.validate()
 			}
 		})
@@ -5806,7 +5808,7 @@ func TestIntegration_GFE_Latency(t *testing.T) {
 			}
 			if stat.View.Measure.Name() != statsPrefix+"gfe_latency" && stat.View.Measure.Name() != statsPrefix+"gfe_header_missing_count" {
 				t.Fatalf("Incorrect measure: got %v, want %v", stat.View.Measure.Name(), statsPrefix+"gfe_latency or "+statsPrefix+"gfe_header_missing_count")
-			} else if lastErr == nil {
+			} else {
 				viewMap[stat.View.Measure.Name()] = true
 			}
 			for _, row := range stat.Rows {
@@ -6831,7 +6833,7 @@ func blackholeOrAllowDirectPath(t *testing.T, blackholeDP bool) {
 			cmdRes := exec.Command("bash", "-c", blackholeDpv4Cmd)
 			out, _ := cmdRes.CombinedOutput()
 			t.Log(string(out))
-		} else if lastErr == nil {
+		} else {
 			cmdRes := exec.Command("bash", "-c", allowDpv4Cmd)
 			out, _ := cmdRes.CombinedOutput()
 			t.Log(string(out))
@@ -6846,7 +6848,7 @@ func blackholeOrAllowDirectPath(t *testing.T, blackholeDP bool) {
 		cmdRes = exec.Command("bash", "-c", blackholeDpv6Cmd)
 		out, _ = cmdRes.CombinedOutput()
 		t.Log(string(out))
-	} else if lastErr == nil {
+	} else {
 		cmdRes := exec.Command("bash", "-c", allowDpv4Cmd)
 		out, _ := cmdRes.CombinedOutput()
 		t.Log(string(out))
@@ -6873,12 +6875,12 @@ func TestIsCloudDevelOrStaging(t *testing.T) {
 	defer func() {
 		if hasJobType {
 			_ = os.Setenv("JOB_TYPE", origJobType)
-		} else if lastErr == nil {
+		} else {
 			_ = os.Unsetenv("JOB_TYPE")
 		}
 		if hasHost {
 			_ = os.Setenv("GCLOUD_TESTS_GOLANG_SPANNER_HOST", origHost)
-		} else if lastErr == nil {
+		} else {
 			_ = os.Unsetenv("GCLOUD_TESTS_GOLANG_SPANNER_HOST")
 		}
 	}()
