@@ -490,7 +490,7 @@ func SelectAll(rows rowIterator, destination interface{}, options ...DecodeOptio
 			if isFirstRow {
 				isFirstRow = false
 				fieldTag = make(map[string]fieldInfo, len(row.fields))
-				initFieldTag(sliceItem.Elem(), &fieldTag, nil)
+				initFieldTag(itemType, fieldTag, nil)
 			}
 			if pointers, err = structPointers(sliceItem.Elem(), row.fields, fieldTag, s.Lenient); err != nil {
 				return err
@@ -553,11 +553,9 @@ func structPointers(sliceItem reflect.Value, cols []*sppb.StructType_Field, fiel
 }
 
 // Initialization the tags from struct.
-func initFieldTag(sliceItem reflect.Value, fieldTagMap *map[string]fieldInfo, path []int) {
-	typ := sliceItem.Type()
-
-	for i := 0; i < sliceItem.NumField(); i++ {
-		fieldType := typ.Field(i)
+func initFieldTag(t reflect.Type, fieldTagMap map[string]fieldInfo, path []int) {
+	for i := 0; i < t.NumField(); i++ {
+		fieldType := t.Field(i)
 		exported := (fieldType.PkgPath == "")
 		// If a named field is unexported, ignore it. An anonymous
 		// unexported field is processed, because it may contain
@@ -575,16 +573,7 @@ func initFieldTag(sliceItem reflect.Value, fieldTagMap *map[string]fieldInfo, pa
 			fieldTypeType = fieldTypeType.Elem()
 		}
 		if name == "" && fieldType.Anonymous && fieldTypeType.Kind() == reflect.Struct {
-			// found an embedded struct (value or pointer)
-			sliceItemOfAnonymous := sliceItem.Field(i)
-			if sliceItemOfAnonymous.Kind() == reflect.Ptr {
-				if sliceItemOfAnonymous.IsNil() {
-					sliceItemOfAnonymous = reflect.New(fieldTypeType).Elem()
-				} else {
-					sliceItemOfAnonymous = sliceItemOfAnonymous.Elem()
-				}
-			}
-			initFieldTag(sliceItemOfAnonymous, fieldTagMap, currentPath)
+			initFieldTag(fieldTypeType, fieldTagMap, currentPath)
 			continue
 		}
 		if !exported {
@@ -595,13 +584,13 @@ func initFieldTag(sliceItem reflect.Value, fieldTagMap *map[string]fieldInfo, pa
 			name = fieldType.Name
 		}
 		key := strings.ToLower(name)
-		if existing, exists := (*fieldTagMap)[key]; exists {
+		if existing, exists := fieldTagMap[key]; exists {
 			if len(existing.indexPath) < len(currentPath) ||
 				(len(existing.indexPath) == len(currentPath) && existing.tagged && !tagged) {
 				continue
 			}
 		}
-		(*fieldTagMap)[key] = fieldInfo{
+		fieldTagMap[key] = fieldInfo{
 			indexPath: append([]int(nil), currentPath...),
 			tagged:    tagged,
 		}
