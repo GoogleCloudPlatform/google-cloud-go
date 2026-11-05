@@ -26,7 +26,7 @@ import (
 
 func main() {
 	parent := flag.String("parent", "", "The path to the parent module. Required.")
-	child := flag.String("child", "", "The comma seperated relative paths to the child modules from the parent. Required.")
+	child := flag.String("child", "", "The comma separated relative paths to the child modules from the parent. Required.")
 	flag.Parse()
 	if *parent == "" || *child == "" {
 		log.Fatalf("parent and child are required")
