@@ -24,30 +24,38 @@
 <line x1="79" y1="118" x2="79" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
 <line x1="79" y1="423" x2="619" y2="423" stroke="#9AA0A6" stroke-width="1.2"/>
 <text x="33" y="270.5" text-anchor="middle" font-family="sans-serif" font-size="11.5" font-weight="bold" fill="#3C4043" transform="rotate(-90 33 270.5)">Aggregate Throughput (MiB/s)</text>
-<rect x="115.0" y="353.9" width="42.0" height="69.1" rx="2" fill="#1A73E8"/>
-<text x="136.0" y="337.4" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">1,358 MiB/s</text>
-<text x="136.0" y="348.9" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">(2.88% CPU)</text>
-<rect x="181.0" y="354.4" width="42.0" height="68.6" rx="2" fill="#00897B"/>
-<text x="202.0" y="337.9" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">1,349 MiB/s</text>
-<text x="202.0" y="349.4" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">(99.3% Native)</text>
-<text x="169.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">W4: BidiRead 48t (5m)</text>
-<text x="169.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">Regional us-west1 (gRPC)</text>
-<rect x="295.0" y="159.9" width="42.0" height="263.1" rx="2" fill="#1A73E8"/>
-<text x="316.0" y="143.4" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">5,177 MiB/s</text>
-<text x="316.0" y="154.9" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">(4.67% CPU)</text>
-<rect x="361.0" y="193.4" width="42.0" height="229.6" rx="2" fill="#00897B"/>
-<text x="382.0" y="176.9" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">4,517 MiB/s</text>
-<text x="382.0" y="188.4" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">(87.3% Native)</text>
-<text x="349.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">W5: BidiWrite 48t (5m)</text>
-<text x="349.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">Zonal us-west1-a (gRPC)</text>
-<rect x="475.0" y="411.5" width="42.0" height="11.5" rx="2" fill="#1A73E8"/>
-<text x="496.0" y="395.0" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">227 MiB/s</text>
-<text x="496.0" y="406.5" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">(Go H2 mux)</text>
-<rect x="541.0" y="351.7" width="42.0" height="71.3" rx="2" fill="#00897B"/>
-<text x="562.0" y="335.2" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">1,402 MiB/s</text>
-<text x="562.0" y="346.7" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">(6.2x faster!)</text>
-<text x="529.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">W5: WriteObject 48t (5m)</text>
-<text x="529.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">Regional us-west1 (JSON)</text>
+<rect x="105.5" y="353.9" width="36.0" height="69.1" rx="2" fill="#1A73E8"/>
+<text x="123.5" y="337.4" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">1,358</text>
+<text x="123.5" y="348.9" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">MiB/s</text>
+<rect x="151.5" y="354.4" width="36.0" height="68.6" rx="2" fill="#00897B"/>
+<text x="169.5" y="337.9" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">1,349</text>
+<text x="169.5" y="349.4" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">(99.3%)</text>
+<text x="146.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W4: BidiRead 48t</text>
+<text x="146.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">Reg us-west1 (gRPC)</text>
+<rect x="240.5" y="353.0" width="36.0" height="70.0" rx="2" fill="#1A73E8"/>
+<text x="258.5" y="336.5" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">1,376</text>
+<text x="258.5" y="348.0" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">MiB/s</text>
+<rect x="286.5" y="351.8" width="36.0" height="71.2" rx="2" fill="#00897B"/>
+<text x="304.5" y="335.3" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">1,401</text>
+<text x="304.5" y="346.8" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">(101.8%!)</text>
+<text x="281.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W4: BidiRead 48t</text>
+<text x="281.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">Zonal us-west1-a (gRPC)</text>
+<rect x="375.5" y="159.9" width="36.0" height="263.1" rx="2" fill="#1A73E8"/>
+<text x="393.5" y="143.4" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">5,177</text>
+<text x="393.5" y="154.9" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">MiB/s</text>
+<rect x="421.5" y="193.4" width="36.0" height="229.6" rx="2" fill="#00897B"/>
+<text x="439.5" y="176.9" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">4,517</text>
+<text x="439.5" y="188.4" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">(87.3%)</text>
+<text x="416.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W5: BidiWrite 48t</text>
+<text x="416.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">Zonal us-west1-a (gRPC)</text>
+<rect x="510.5" y="411.5" width="36.0" height="11.5" rx="2" fill="#1A73E8"/>
+<text x="528.5" y="395.0" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">227</text>
+<text x="528.5" y="406.5" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#1A73E8">MiB/s</text>
+<rect x="556.5" y="351.7" width="36.0" height="71.3" rx="2" fill="#00897B"/>
+<text x="574.5" y="335.2" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">1,402</text>
+<text x="574.5" y="346.7" text-anchor="middle" font-family="sans-serif" font-size="8.8" font-weight="bold" fill="#00897B">(6.2x!)</text>
+<text x="551.5" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W5: WriteObject 48t</text>
+<text x="551.5" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">Reg us-west1 (JSON)</text>
   <text x="1015.0" y="72" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202124">B. P50 Latency Across Workloads &amp; Buckets (ms, Lower is Better)</text>
 <rect x="703" y="86" width="13" height="13" rx="2" fill="#1A73E8"/>
 <text x="721" y="96" font-family="sans-serif" font-size="11.5" font-weight="600" fill="#3C4043">Native Go SDK</text>
@@ -72,39 +80,39 @@
 <text x="742.5" y="406.3" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">208ms</text>
 <rect x="768.0" y="410.8" width="35.0" height="12.2" rx="2" fill="#00897B"/>
 <text x="785.5" y="405.8" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">215ms</text>
-<text x="764.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">W1: open</text>
-<text x="764.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">(Reg gRPC)</text>
+<text x="764.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W1: open</text>
+<text x="764.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Reg gRPC)</text>
 <rect x="835.0" y="410.7" width="35.0" height="12.3" rx="2" fill="#1A73E8"/>
 <text x="852.5" y="405.7" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">218ms</text>
 <rect x="878.0" y="418.0" width="35.0" height="5.0" rx="2" fill="#00897B"/>
 <text x="895.5" y="413.0" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">89ms</text>
-<text x="874.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">W6a: list-100</text>
-<text x="874.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">(Reg gRPC)</text>
+<text x="874.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">W6a: list-100</text>
+<text x="874.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Reg gRPC)</text>
 <rect x="945.0" y="340.5" width="35.0" height="82.5" rx="2" fill="#1A73E8"/>
 <text x="962.5" y="335.5" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">1,460ms</text>
 <rect x="988.0" y="344.5" width="35.0" height="78.5" rx="2" fill="#00897B"/>
 <text x="1005.5" y="339.5" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">1,390ms</text>
-<text x="984.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">128MiB Read</text>
-<text x="984.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">(Reg JSON)</text>
+<text x="984.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">128MiB Read</text>
+<text x="984.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Reg JSON)</text>
 <rect x="1055.0" y="160.4" width="35.0" height="262.6" rx="2" fill="#1A73E8"/>
 <text x="1072.5" y="155.4" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">4,650ms</text>
 <rect x="1098.0" y="157.5" width="35.0" height="265.5" rx="2" fill="#00897B"/>
 <text x="1115.5" y="152.5" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">4,700ms</text>
-<text x="1094.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">128MiB Write</text>
-<text x="1094.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">(Reg JSON)</text>
+<text x="1094.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">128MiB Write</text>
+<text x="1094.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Reg JSON)</text>
 <rect x="1165.0" y="323.6" width="35.0" height="99.4" rx="2" fill="#1A73E8"/>
 <text x="1182.5" y="318.6" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">1,759ms</text>
 <rect x="1208.0" y="321.8" width="35.0" height="101.2" rx="2" fill="#00897B"/>
 <text x="1225.5" y="305.3" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">1,791ms</text>
 <text x="1225.5" y="316.8" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">(98.2%)</text>
-<text x="1204.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">128MiB Write</text>
-<text x="1204.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">(Zonal whole)</text>
+<text x="1204.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">128MiB Write</text>
+<text x="1204.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Zonal whole)</text>
 <rect x="1275.0" y="318.6" width="35.0" height="104.4" rx="2" fill="#1A73E8"/>
 <text x="1292.5" y="313.6" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#1A73E8">1,849ms</text>
 <rect x="1318.0" y="334.1" width="35.0" height="88.9" rx="2" fill="#00897B"/>
 <text x="1335.5" y="317.6" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">1,574ms</text>
 <text x="1335.5" y="329.1" text-anchor="middle" font-family="sans-serif" font-size="9.0" font-weight="bold" fill="#00897B">(-15% lat!)</text>
-<text x="1314.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">128MiB Write</text>
-<text x="1314.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.5" font-weight="600" fill="#202124">(Zonal 32k)</text>
+<text x="1314.0" y="441" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">128MiB Write</text>
+<text x="1314.0" y="455" text-anchor="middle" font-family="sans-serif" font-size="10.2" font-weight="600" fill="#202124">(Zonal 32k)</text>
   <text x="700" y="512" text-anchor="middle" font-family="sans-serif" font-size="11" font-style="italic" fill="#5F6368">All bars compare identical non-fallback protocols on c4-standard-192 (us-central1-b -&gt; us-west1 Regional &amp; us-west1-a Zonal Rapid). Regional gRPC BidiWriteObject is N/A in Rust SDK (Zonal-only).</text>
 </svg>
