@@ -2396,8 +2396,8 @@ func TestSelectAll(t *testing.T) {
 	}
 	type Singer struct {
 		secret string
-		ID     int64  `spanner:"-"`
-		RealID int64  `spanner:"ID"`
+		ID     int64 `spanner:"-"`
+		RealID int64 `spanner:"ID"`
 		Name   string
 		*Address
 	}
