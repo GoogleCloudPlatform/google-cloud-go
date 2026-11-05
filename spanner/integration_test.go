@@ -2223,22 +2223,22 @@ func TestIntegration_DbRemovalIsFatal(t *testing.T) {
 
 		if hasSuccess {
 			if consecutiveNotFound > 0 {
-				t.Logf("Query after drop succeeded on a channel with stale cache after %d NotFound errors; resetting counter", consecutiveNotFound)
+				t.Logf("Query after drop succeeded on a channel with stale cache after %d NotFound batches; resetting counter", consecutiveNotFound)
 			}
 			consecutiveNotFound = 0
 		} else if lastErr != nil {
 			t.Logf("Query after drop returned unexpected error (resetting counter): %v", lastErr)
 			consecutiveNotFound = 0
 		} else {
-			consecutiveNotFound += loopNotFound
+			consecutiveNotFound++
 			if consecutiveNotFound >= minConsecutiveNotFound && time.Since(dropTime) >= minPostDropPropagation {
-				t.Logf("DropDatabase propagated across all channels after %v (%d consecutive NotFound errors)", time.Since(dropTime).Round(time.Millisecond), consecutiveNotFound)
+				t.Logf("DropDatabase propagated across all channels after %v (%d consecutive NotFound batches)", time.Since(dropTime).Round(time.Millisecond), consecutiveNotFound)
 				break
 			}
 		}
 
 		if time.Now().After(dropDeadline) {
-			t.Fatalf("timeout (90s) waiting for %d consecutive Database not found errors after drop (got %d, last err: %v)", minConsecutiveNotFound, consecutiveNotFound, lastErr)
+			t.Fatalf("timeout (90s) waiting for %d consecutive Database not found batches after drop (got %d, last err: %v)", minConsecutiveNotFound, consecutiveNotFound, lastErr)
 		}
 		select {
 		case <-ctx.Done():
