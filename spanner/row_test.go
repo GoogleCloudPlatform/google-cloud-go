@@ -2408,6 +2408,10 @@ func TestSelectAll(t *testing.T) {
 		Name string
 		BaseShadow
 	}
+	type PersonIgnoredEmbed struct {
+		Name    string
+		Address `spanner:"-"`
+	}
 
 	tests := []struct {
 		name      string
@@ -2936,7 +2940,7 @@ func TestSelectAll(t *testing.T) {
 				),
 			},
 			want: &[]*Singer{
-				{RealID: 1, Name: "alice", Address: &Address{AddressCity: "NYC"}},
+				{RealID: 1, Name: "alice"},
 				{RealID: 2, Name: "bob"},
 			},
 		},
@@ -2963,33 +2967,23 @@ func TestSelectAll(t *testing.T) {
 			},
 		},
 		{
-			name: "success: embedded pointer struct decoded directly without WithLenient",
+			name: "success: ignore tag on embedded struct is respected with WithLenient",
 			args: args{
-				destination: &[]*Singer{},
+				destination: &[]PersonIgnoredEmbed{},
+				options:     []DecodeOptions{WithLenient()},
 				mock: newMockIterator(
 					&Row{
 						[]*sppb.StructType_Field{
 							{Name: "Name", Type: stringType()},
-							{Name: "ID", Type: intType()},
 							{Name: "City", Type: stringType()},
-							{Name: "Street", Type: stringType()},
-							{Name: "ZipCode", Type: stringType()},
 						},
-						[]*proto3.Value{stringProto("alice"), intProto(1), stringProto("NYC"), stringProto("Broadway"), stringProto("10001")},
+						[]*proto3.Value{stringProto("alice"), stringProto("NYC")},
 					},
 					iterator.Done,
 				),
 			},
-			want: &[]*Singer{
-				{
-					RealID: 1,
-					Name:   "alice",
-					Address: &Address{
-						AddressCity:   "NYC",
-						AddressStreet: "Broadway",
-						AddressZip:    "10001",
-					},
-				},
+			want: &[]PersonIgnoredEmbed{
+				{Name: "alice"},
 			},
 		},
 		{
