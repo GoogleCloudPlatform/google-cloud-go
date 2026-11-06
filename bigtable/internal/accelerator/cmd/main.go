@@ -24,7 +24,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -42,62 +45,106 @@ import (
 // principal is left unresolved and the client falls back to its native path.
 const identityResolveTimeout = 15 * time.Second
 
-func main() {
-	udsPath := flag.String("uds-path", "", "path to unix domain socket (required)")
-	project := flag.String("project", "", "GCP project ID (required)")
-	instance := flag.String("instance", "", "Bigtable instance ID (required)")
-	appProfile := flag.String("app-profile", "", "Bigtable app profile (optional)")
+// daemonConfig holds parsed command-line flags for the accelerator daemon.
+type daemonConfig struct {
+	udsPath        string
+	project        string
+	instance       string
+	appProfile     string
+	fallback       bool
+	dataEndpoint   string
+	universeDomain string
+	scopesFlag     string
+	quotaProject   string
+	userAgent      string
+}
+
+// parseConfig parses the daemon's CLI arguments and validates required flags.
+func parseConfig(args []string) (*daemonConfig, error) {
+	fs := flag.NewFlagSet("accelerator", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	cfg := &daemonConfig{}
+	fs.StringVar(&cfg.udsPath, "uds-path", "", "path to unix domain socket (required)")
+	fs.StringVar(&cfg.project, "project", "", "GCP project ID (required)")
+	fs.StringVar(&cfg.instance, "instance", "", "Bigtable instance ID (required)")
+	fs.StringVar(&cfg.appProfile, "app-profile", "", "Bigtable app profile (optional)")
 	// Fallback flag for client without any native implementations
-	fallback := flag.Bool("fallback", false, "fall back to the classic bigtable.Client when the session backend returns Unimplemented (e.g. instance lacks session serving)")
+	fs.BoolVar(&cfg.fallback, "fallback", false, "fall back to the classic bigtable.Client when the session backend returns Unimplemented (e.g. instance lacks session serving)")
 	// Endpoint overrides. When empty, NewChannel falls back to the
 	// default Bigtable data-plane endpoint (bigtable.googleapis.com:443). The
 	// spawning client supplies these when it targets a non-default endpoint or a
 	// non-GDU universe.
-	dataEndpoint := flag.String("data-endpoint", "", "override Bigtable data-plane endpoint, e.g. bigtable.googleapis.com:443 (optional)")
-	universeDomain := flag.String("universe-domain", "", "override the service universe domain, e.g. googleapis.com (optional)")
-	scopesFlag := flag.String("scopes", "", "comma-separated OAuth scopes to override the default data scope (optional)")
-	quotaProject := flag.String("quota-project", "", "quota/billing project override (optional)")
+	fs.StringVar(&cfg.dataEndpoint, "data-endpoint", "", "override Bigtable data-plane endpoint, e.g. bigtable.googleapis.com:443 (optional)")
+	fs.StringVar(&cfg.universeDomain, "universe-domain", "", "override the service universe domain, e.g. googleapis.com (optional)")
+	fs.StringVar(&cfg.scopesFlag, "scopes", "", "comma-separated OAuth scopes to override the default data scope (optional)")
+	fs.StringVar(&cfg.quotaProject, "quota-project", "", "quota/billing project override (optional)")
 	// User-agent prefix. Cross-language clients (e.g. the Python SDK) pass their
 	// own client user agent here so the service sees both the caller and the
 	// daemon build, e.g. "python-bigtable/2.1.0 go-acc/v1.38.0".
-	userAgent := flag.String("user-agent", "", "user-agent prefix prepended to the daemon's own token (optional)")
-	flag.Parse()
+	fs.StringVar(&cfg.userAgent, "user-agent", "", "user-agent prefix prepended to the daemon's own token (optional)")
 
-	if *udsPath == "" {
-		log.Fatal("Missing required flag: --uds-path")
+	if err := fs.Parse(args); err != nil {
+		return nil, err
 	}
-	if *project == "" {
-		log.Fatal("Missing required flag: --project")
+	if cfg.udsPath == "" {
+		return nil, errors.New("Missing required flag: --uds-path")
 	}
-	if *instance == "" {
-		log.Fatal("Missing required flag: --instance")
+	if cfg.project == "" {
+		return nil, errors.New("Missing required flag: --project")
 	}
+	if cfg.instance == "" {
+		return nil, errors.New("Missing required flag: --instance")
+	}
+	return cfg, nil
+}
 
+// buildClientOptions translates parsed CLI flags into Google API ClientOptions,
+// effective OAuth scopes, and the composed user-agent string.
+func buildClientOptions(cfg *daemonConfig) (opts []option.ClientOption, effectiveScopes []string, composedUA string) {
 	// Only forward overrides that were actually set; leaving them unset lets
 	// the default endpoint/universe-domain resolution apply.
-	var opts []option.ClientOption
-	if *dataEndpoint != "" {
-		opts = append(opts, option.WithEndpoint(*dataEndpoint))
+	if cfg.dataEndpoint != "" {
+		opts = append(opts, option.WithEndpoint(cfg.dataEndpoint))
 	}
-	if *universeDomain != "" {
-		opts = append(opts, option.WithUniverseDomain(*universeDomain))
+	if cfg.universeDomain != "" {
+		opts = append(opts, option.WithUniverseDomain(cfg.universeDomain))
 	}
 	// Caller opts are appended after the channel's defaults, so WithScopes here
 	// overrides the hardcoded data scope.
-	scopes := splitScopes(*scopesFlag)
+	scopes := splitScopes(cfg.scopesFlag)
 	if len(scopes) > 0 {
 		opts = append(opts, option.WithScopes(scopes...))
 	}
-	if *quotaProject != "" {
-		opts = append(opts, option.WithQuotaProject(*quotaProject))
+	if cfg.quotaProject != "" {
+		opts = append(opts, option.WithQuotaProject(cfg.quotaProject))
 	}
+	composedUA = accelerator.ComposeUserAgent(cfg.userAgent)
 	// Prepend the caller's user-agent prefix to the daemon's own token. Appended
 	// after the channel's defaults so it overrides the default WithUserAgent; a
 	// blank flag leaves the default (daemon-token-only) user agent untouched.
-	if strings.TrimSpace(*userAgent) != "" {
-		opts = append(opts, option.WithUserAgent(accelerator.ComposeUserAgent(*userAgent)))
+	if strings.TrimSpace(cfg.userAgent) != "" {
+		opts = append(opts, option.WithUserAgent(composedUA))
 	}
 
+	effectiveScopes = scopes
+	if len(effectiveScopes) == 0 {
+		effectiveScopes = []string{accelerator.DataScope}
+	}
+	return opts, effectiveScopes, composedUA
+}
+
+func main() {
+	cfg, err := parseConfig(os.Args[1:])
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		log.Fatal(err)
+	}
+
+	opts, effectiveScopes, composedUA := buildClientOptions(cfg)
 	ctx := context.Background()
 
 	// Resolve ADC once, using the effective scopes the channel will dial with,
@@ -105,10 +152,6 @@ func main() {
 	// WithCredentials) and the identity resolver below. This avoids a second
 	// FindDefaultCredentials lookup in identity resolution and guarantees the
 	// published principal matches the credentials the channel actually dials.
-	effectiveScopes := scopes
-	if len(effectiveScopes) == 0 {
-		effectiveScopes = []string{accelerator.DataScope}
-	}
 	creds, err := google.FindDefaultCredentials(ctx, effectiveScopes...)
 	if err != nil {
 		log.Fatalf("failed to resolve credentials: %v", err)
@@ -122,7 +165,7 @@ func main() {
 	// metrics are attributed to both the calling client library and the daemon
 	// build, e.g. "python-bigtable/2.1.0 go-acc/v1.38.0". A blank --user-agent
 	// yields the daemon token alone ("go-acc/v1.38.0").
-	channel, err := accelerator.NewChannel(ctx, *project, *instance, *appProfile, accelerator.ComposeUserAgent(*userAgent), opts...)
+	channel, err := accelerator.NewChannel(ctx, cfg.project, cfg.instance, cfg.appProfile, composedUA, opts...)
 	if err != nil {
 		log.Fatalf("failed to construct accelerator channel: %v", err)
 	}
@@ -131,17 +174,17 @@ func main() {
 	// The FallbackChannel dials its own bigtable.Client (classic path) with the
 	// same opts so both paths share credentials and endpoint.
 	var srv *accelerator.Server
-	if *fallback {
-		fc, err := accelerator.NewFallbackChannel(ctx, channel, *project, *instance, *appProfile, opts...)
+	if cfg.fallback {
+		fc, err := accelerator.NewFallbackChannel(ctx, channel, cfg.project, cfg.instance, cfg.appProfile, opts...)
 		if err != nil {
 			log.Fatalf("failed to construct classic fallback channel: %v", err)
 		}
-		srv = accelerator.NewServer(*udsPath, fc)
+		srv = accelerator.NewServer(cfg.udsPath, fc)
 	} else {
-		srv = accelerator.NewServer(*udsPath, channel)
+		srv = accelerator.NewServer(cfg.udsPath, channel)
 	}
 	log.Printf("Starting accelerator daemon on UDS=%s project=%s instance=%s app-profile=%q data-endpoint=%q universe-domain=%q scopes=%q quota-project=%q user-agent=%q",
-		*udsPath, *project, *instance, *appProfile, *dataEndpoint, *universeDomain, *scopesFlag, *quotaProject, accelerator.ComposeUserAgent(*userAgent))
+		cfg.udsPath, cfg.project, cfg.instance, cfg.appProfile, cfg.dataEndpoint, cfg.universeDomain, cfg.scopesFlag, cfg.quotaProject, composedUA)
 
 	// Resolve and publish the daemon's identity BEFORE binding the socket, so
 	// the file is present by the time the client detects a connectable UDS.
@@ -157,7 +200,7 @@ func main() {
 	// Record effectiveScopes (not the raw override), so identity.json reflects
 	// the scope the daemon actually dials with rather than an empty list when no
 	// --scopes flag was passed.
-	if err := writeIdentity(*udsPath, principal, effectiveScopes); err != nil {
+	if err := writeIdentity(cfg.udsPath, principal, effectiveScopes); err != nil {
 		log.Printf("warning: failed to write identity document: %v", err)
 	}
 

@@ -400,3 +400,114 @@ func TestServer_LargeMessageOverUDS(t *testing.T) {
 		t.Fatalf("ReadRows chunk value len = %d; want %d", len(resp.GetChunks()[0].GetValue()), len(largeVal))
 	}
 }
+
+func TestServer_Stop_FallsBackToHardStopOnWedgedRPC(t *testing.T) {
+	udsPath := filepath.Join(t.TempDir(), "accel-wedged.sock")
+	ch := &slowClosingTestChannel{
+		rpcStarted: make(chan struct{}, 1),
+		rpcRelease: make(chan struct{}), // never closed: simulates a wedged RPC
+	}
+	srv := NewServer(udsPath, ch, WithStdinReader(nil), WithGracefulStopTimeout(80*time.Millisecond))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("srv.Start: %v", err)
+	}
+	defer srv.Stop()
+
+	conn, err := grpc.NewClient("unix:"+udsPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+	client := v2pb.NewBigtableClient(conn)
+
+	rpcDone := make(chan error, 1)
+	go func() {
+		_, err := client.MutateRow(context.Background(), &v2pb.MutateRowRequest{
+			TableName: "projects/p/instances/i/tables/t",
+			RowKey:    []byte("k"),
+		})
+		rpcDone <- err
+	}()
+
+	<-ch.rpcStarted
+
+	startStop := time.Now()
+	srv.Stop()
+	elapsed := time.Since(startStop)
+
+	select {
+	case <-srv.ShutdownChan():
+	default:
+		t.Fatal("ShutdownChan not closed after Stop() returned")
+	}
+	if !ch.channelClosed.Load() {
+		t.Error("channelClosed = false after hard Stop fallback; want true")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Stop() took %v despite 80ms gracefulStopTimeout", elapsed)
+	}
+	select {
+	case err := <-rpcDone:
+		if err == nil {
+			t.Error("expected wedged RPC to fail after hard Stop(), got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("wedged client RPC did not abort after hard Stop()")
+	}
+}
+
+func TestServer_ParentPidWatchdog(t *testing.T) {
+	if !parentPidWatchdogSupported {
+		t.Skip("parent PID watchdog not supported on this platform")
+	}
+	udsPath := filepath.Join(t.TempDir(), "accel-ppid.sock")
+	var currentPpid atomic.Int64
+	currentPpid.Store(4242)
+
+	srv := NewServer(udsPath, &Channel{}, WithStdinReader(nil), func(s *Server) {
+		s.parentPidPollInterval = 20 * time.Millisecond
+		s.getppid = func() int { return int(currentPpid.Load()) }
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("srv.Start: %v", err)
+	}
+	defer srv.Stop()
+
+	// Reparent the daemon (simulate original parent dying).
+	currentPpid.Store(1)
+
+	select {
+	case <-srv.ShutdownChan():
+		// success: monitorParentPid detected reparenting and stopped the server.
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not shut down within 2s after parent PID changed")
+	}
+}
+
+func TestServer_ParentPidWatchdogSkippedWhenInitialPpidIsOne(t *testing.T) {
+	if !parentPidWatchdogSupported {
+		t.Skip("parent PID watchdog not supported on this platform")
+	}
+	udsPath := filepath.Join(t.TempDir(), "accel-ppid1.sock")
+	var currentPpid atomic.Int64
+	currentPpid.Store(1)
+
+	srv := NewServer(udsPath, &Channel{}, WithStdinReader(nil), func(s *Server) {
+		s.parentPidPollInterval = 15 * time.Millisecond
+		s.getppid = func() int { return int(currentPpid.Load()) }
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("srv.Start: %v", err)
+	}
+	defer srv.Stop()
+
+	// Even if getppid changes later, monitorParentPid should not have been
+	// launched when initialPpid == 1 (container entrypoint case).
+	currentPpid.Store(999)
+	select {
+	case <-srv.ShutdownChan():
+		t.Fatal("server unexpectedly shut down when initialPpid == 1")
+	case <-time.After(60 * time.Millisecond):
+		// success
+	}
+}

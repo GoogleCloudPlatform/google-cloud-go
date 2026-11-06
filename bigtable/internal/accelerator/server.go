@@ -49,14 +49,14 @@ const maxMsgSize = 1 << 28
 // never exiting.
 const defaultHandshakeTimeout = 5 * time.Second
 
-// gracefulStopTimeout bounds the graceful drain in Stop before falling back to a
-// hard grpc.Server.Stop, so a wedged in-flight RPC can't hang shutdown forever
-// or exceed the parent's stdin+SIGTERM grace window.
-const gracefulStopTimeout = 3 * time.Second
+// defaultGracefulStopTimeout bounds the graceful drain in Stop before falling
+// back to a hard grpc.Server.Stop, so a wedged in-flight RPC can't hang
+// shutdown forever or exceed the parent's stdin+SIGTERM grace window.
+const defaultGracefulStopTimeout = 3 * time.Second
 
-// parentPidPollInterval is how often monitorParentPid samples the parent PID to
-// detect reparenting (original parent death).
-const parentPidPollInterval = 500 * time.Millisecond
+// defaultParentPidPollInterval is how often monitorParentPid samples the parent
+// PID to detect reparenting (original parent death).
+const defaultParentPidPollInterval = 500 * time.Millisecond
 
 // Server manages the lifecycle of the local gRPC UDS server.
 type Server struct {
@@ -72,7 +72,10 @@ type Server struct {
 	channel      channelConn
 	health       *health.Server
 
-	handshakeTimeout time.Duration // bounds readSecret; defaults to defaultHandshakeTimeout, override with WithHandshakeTimeout.
+	handshakeTimeout      time.Duration // bounds readSecret; defaults to defaultHandshakeTimeout, override with WithHandshakeTimeout.
+	gracefulStopTimeout   time.Duration // bounds GracefulStop in Stop(); defaults to defaultGracefulStopTimeout.
+	parentPidPollInterval time.Duration // poll interval for monitorParentPid; defaults to defaultParentPidPollInterval.
+	getppid               func() int    // defaults to os.Getppid; overridable in tests.
 }
 
 // ServerOption configures optional Server behavior. Options are applied in
@@ -94,15 +97,24 @@ func WithHandshakeTimeout(d time.Duration) ServerOption {
 	return func(s *Server) { s.handshakeTimeout = d }
 }
 
+// WithGracefulStopTimeout overrides how long Stop waits for GracefulStop to
+// drain in-flight RPCs before falling back to a hard grpc.Server.Stop.
+func WithGracefulStopTimeout(d time.Duration) ServerOption {
+	return func(s *Server) { s.gracefulStopTimeout = d }
+}
+
 // NewServer creates a new Server instance.
 func NewServer(udsPath string, channel channelConn, opts ...ServerOption) *Server {
 	s := &Server{
-		udsPath:          udsPath,
-		shutdownChan:     make(chan struct{}),
-		stdinReader:      os.Stdin,
-		channel:          channel,
-		service:          newBigtableServerStub(),
-		handshakeTimeout: defaultHandshakeTimeout,
+		udsPath:               udsPath,
+		shutdownChan:          make(chan struct{}),
+		stdinReader:           os.Stdin,
+		channel:               channel,
+		service:               newBigtableServerStub(),
+		handshakeTimeout:      defaultHandshakeTimeout,
+		gracefulStopTimeout:   defaultGracefulStopTimeout,
+		parentPidPollInterval: defaultParentPidPollInterval,
+		getppid:               os.Getppid,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -120,7 +132,7 @@ func (s *Server) Start() error {
 	// ppid alone, so we don't refuse to serve; instead we skip the parent-PID
 	// watchdog below and rely on monitorStdin, whose EOF signal detects parent
 	// death without the ppid ambiguity.
-	initialPpid := os.Getppid()
+	initialPpid := s.getppid()
 
 	// Read the auth secret from stdin BEFORE binding — the parent process writes
 	// the secret before the daemon starts serving, so it is always present on the
@@ -252,7 +264,7 @@ func (s *Server) Stop() {
 			}()
 			select {
 			case <-stopped:
-			case <-time.After(gracefulStopTimeout):
+			case <-time.After(s.gracefulStopTimeout):
 				s.grpcServer.Stop()
 			}
 		}
@@ -353,7 +365,7 @@ func (s *Server) monitorStdin() {
 // only launches this watchdog when initialPpid is a real parent (not 1) — see
 // Start for why a ppid of 1 is ambiguous and handled by monitorStdin instead.
 func (s *Server) monitorParentPid(initialPpid int) {
-	ticker := time.NewTicker(parentPidPollInterval)
+	ticker := time.NewTicker(s.parentPidPollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -361,7 +373,7 @@ func (s *Server) monitorParentPid(initialPpid int) {
 		case <-s.shutdownChan:
 			return
 		case <-ticker.C:
-			if os.Getppid() != initialPpid {
+			if s.getppid() != initialPpid {
 				s.Stop()
 				return
 			}
