@@ -536,28 +536,71 @@ func isServerChecksumError(err error, errStr string) bool {
 	return false
 }
 
+// credentialError marks an error returned while obtaining an access token so
+// that it can be classified as AUTHENTICATION_ERROR regardless of the
+// underlying cause (for example a metadata server connection failure).
+// It is transparent to callers: Error(), Unwrap(), Timeout(), and Temporary()
+// expose the original error's behavior.
+type credentialError struct{ err error }
+
+func (e *credentialError) Error() string { return e.err.Error() }
+func (e *credentialError) Unwrap() error { return e.err }
+
+func (e *credentialError) Timeout() bool {
+	var ne net.Error
+	return errors.As(e.err, &ne) && ne.Timeout()
+}
+
+func (e *credentialError) Temporary() bool {
+	var ne interface{ Temporary() bool }
+	return errors.As(e.err, &ne) && ne.Temporary()
+}
+
 // computeErrorType maps the request result to the standard error.type values.
 func computeErrorType(err error, isHTTP bool, statusCode int64) string {
-	if err == nil {
+	// io.EOF signals the normal end of a gRPC stream or an HTTP response body
+	// (where statusCode > 0), whereas an HTTP request that fails with io.EOF
+	// before receiving a response (statusCode == 0) is a dropped connection.
+	if err == nil || (errors.Is(err, io.EOF) && (!isHTTP || statusCode > 0)) {
 		if isHTTP && statusCode >= 400 {
 			return mapHTTPStatusCode(int(statusCode))
 		}
 		return "OK"
 	}
 
-	if errors.Is(err, io.EOF) {
-		return "OK"
-	}
-
 	errStr := strings.ToLower(err.Error())
+
+	if errors.Is(err, errStallTimeout) || errors.Is(err, errReadStallTimeout) {
+		return "TIMEOUT"
+	}
 
 	if errors.Is(err, context.Canceled) || strings.Contains(errStr, "context canceled") {
 		return "CANCELLED"
 	}
 
+	var (
+		credErr *credentialError
+		authErr *auth.Error
+	)
+	if errors.As(err, &credErr) || errors.As(err, &authErr) {
+		return "AUTHENTICATION_ERROR"
+	}
+
+	// Check *net.DNSError before *net.OpError and context.DeadlineExceeded because
+	// net.Dialer wraps DNS lookup failures (including DNS timeouts) inside
+	// &net.OpError{Op: "dial"}.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "DNS_FAILURE"
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return "CONNECTION_ERROR"
+	}
+
 	// gRPC reports a client-side deadline as a DeadlineExceeded status with
 	// this message; other DeadlineExceeded statuses come from the service.
-	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errStr, "context deadline exceeded") {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return "TIMEOUT"
 	}
 
@@ -585,6 +628,9 @@ func computeErrorType(err error, isHTTP bool, statusCode int64) string {
 	var grpcType string
 	if !isHTTP {
 		if st, ok := status.FromError(err); ok && st.Code() != codes.OK {
+			if st.Code() == codes.DeadlineExceeded && strings.Contains(errStr, "context deadline exceeded") {
+				return "TIMEOUT"
+			}
 			grpcType = grpcCodeToString(st.Code())
 			// Unknown and Unavailable are also used for client-side and
 			// network failures, which the message describes more precisely.
@@ -607,20 +653,34 @@ func computeErrorType(err error, isHTTP bool, statusCode int64) string {
 // lowercase error text. It returns "" if the text matches no known class.
 func errorTypeFromMessage(errStr string) string {
 	switch {
-	case strings.Contains(errStr, "timeout"):
-		return "TIMEOUT"
 	case strings.Contains(errStr, "checksum") || strings.Contains(errStr, "mismatch"):
 		return "CHECKSUM_MISMATCH"
-	case strings.Contains(errStr, "auth") || strings.Contains(errStr, "credentials") || strings.Contains(errStr, "token") || strings.Contains(errStr, "key"):
+	case strings.Contains(errStr, "auth") || strings.Contains(errStr, "credentials") || strings.Contains(errStr, "per-rpc creds") || strings.Contains(errStr, "token") || strings.Contains(errStr, "key"):
 		return "AUTHENTICATION_ERROR"
 	case strings.Contains(errStr, "no such host") || strings.Contains(errStr, "no address"):
 		return "DNS_FAILURE"
-	case strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "eof"):
-		return "CONNECTION_ERROR"
 	case strings.Contains(errStr, "tls") || strings.Contains(errStr, "certificate") || strings.Contains(errStr, "x509"):
 		return "TLS_FAILURE"
+	case strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "dial tcp") || strings.Contains(errStr, "broken pipe") || strings.Contains(errStr, "eof") || strings.Contains(errStr, "closed network connection"):
+		return "CONNECTION_ERROR"
+	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "context deadline exceeded"):
+		return "TIMEOUT"
 	}
 	return ""
+}
+
+// refineCancelled labels attempts that the client aborted because of a dynamic
+// read stall timeout or write chunk transfer timeout as TIMEOUT rather than
+// CANCELLED, which would otherwise suggest that the application cancelled the
+// request.
+func refineCancelled(ctx context.Context, errorType string) string {
+	if errorType == "CANCELLED" {
+		cause := context.Cause(ctx)
+		if errors.Is(cause, errReadStallTimeout) || errors.Is(cause, errStallTimeout) {
+			return "TIMEOUT"
+		}
+	}
+	return errorType
 }
 
 // mapHTTPStatusCode converts an HTTP status code to a canonical API error string.
@@ -651,7 +711,7 @@ func mapHTTPStatusCode(code int) string {
 		return "INTERNAL"
 	case 501:
 		return "UNIMPLEMENTED"
-	case 503:
+	case 502, 503:
 		return "UNAVAILABLE"
 	case 504:
 		return "DEADLINE_EXCEEDED"
@@ -673,7 +733,7 @@ func (cm *clientMetrics) recordRPC(ctx context.Context, method, target string, d
 		methodName = methodName[idx+1:]
 	}
 
-	errorType := computeErrorType(err, false, statusCode)
+	errorType := refineCancelled(ctx, computeErrorType(err, false, statusCode))
 
 	attrs := []attribute.KeyValue{
 		attribute.String("rpc.system.name", "grpc"),
@@ -731,7 +791,7 @@ func (cm *clientMetrics) recordHTTP(ctx context.Context, req *http.Request, resp
 	}
 
 	urlTemplate := computeURLTemplate(req.URL.Path, req.URL.Host)
-	errorType := computeErrorType(err, true, statusCode)
+	errorType := refineCancelled(ctx, computeErrorType(err, true, statusCode))
 
 	attrs := []attribute.KeyValue{
 		attribute.String("rpc.system.name", "http"),
@@ -793,11 +853,20 @@ func computeURLTemplate(path, host string) string {
 	return prefix + "{bucket}/" + oRest
 }
 
+// stripPort returns the host name of an HTTP host ("host:port") or a gRPC
+// target ("dns:///host:port", "google-c2p:///host", "dns://authority/host"),
+// without scheme, authority or port, for use as the server.address attribute.
 func stripPort(host string) string {
+	if _, rest, ok := strings.Cut(host, "://"); ok {
+		host = rest
+		if _, afterSlash, ok := strings.Cut(host, "/"); ok {
+			host = afterSlash
+		}
+	}
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		return h
 	}
-	return host
+	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 }
 
 // metricsRoundTripper is an http.RoundTripper that wraps an underlying transport.
@@ -890,7 +959,7 @@ func (rt *metricsRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	if resp != nil {
 		statusCode = int64(resp.StatusCode)
 	}
-	errorType := computeErrorType(err, true, statusCode)
+	errorType := refineCancelled(req.Context(), computeErrorType(err, true, statusCode))
 
 	if rt.metrics != nil {
 		state := metricsStateFromContext(req.Context())
@@ -1054,7 +1123,7 @@ func (cm *clientMetrics) recordGFEMetrics(ctx context.Context, headerMD, trailer
 		headerVal = headerVals[0]
 	}
 	if headerVal == "" {
-		errType := computeErrorType(err, false, int64(status.Code(err)))
+		errType := refineCancelled(ctx, computeErrorType(err, false, int64(status.Code(err))))
 		missingAttrs := metric.WithAttributes(
 			attribute.String("rpc.method", logicalMethod),
 			attribute.String("rpc.system.name", "grpc"),
@@ -1314,7 +1383,7 @@ func (cm *clientMetrics) startOperation(ctx context.Context, method string, isHT
 	record := func(err error) {
 		recordOnce.Do(func() {
 			duration := time.Since(state.startTime).Seconds()
-			errorType := computeErrorType(err, isHTTP, 0)
+			errorType := refineCancelled(ctx, computeErrorType(err, isHTTP, 0))
 
 			attrs := []attribute.KeyValue{
 				attribute.String("rpc.system.name", state.getSystemName()),
@@ -1758,6 +1827,12 @@ func (p *metricsTokenProvider) Token(ctx context.Context) (*auth.Token, error) {
 	start := time.Now()
 	tok, err := p.base.Token(ctx)
 	p.metrics.recordCredentialRefreshDuration(ctx, time.Since(start), err)
+	if err != nil {
+		var credErr *credentialError
+		if !errors.As(err, &credErr) {
+			err = &credentialError{err: err}
+		}
+	}
 	return tok, err
 }
 
