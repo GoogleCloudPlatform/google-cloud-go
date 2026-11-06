@@ -1,5 +1,12 @@
 # Changes
 
+## [0.24.4](https://github.com/googleapis/google-cloud-go/compare/auth/v0.24.3...auth/v0.24.4) (2026-11-06)
+
+
+### Bug Fixes
+
+* **auth:** Use JWT exp claim for ID token expiry ([#20859](https://github.com/googleapis/google-cloud-go/issues/20859)) ([726bdb3](https://github.com/googleapis/google-cloud-go/commit/726bdb377849a63250a7b1e6aa329a173c265b3f)), refs [#20839](https://github.com/googleapis/google-cloud-go/issues/20839)
+
 ## [0.24.3](https://github.com/googleapis/google-cloud-go/compare/auth/v0.24.2...auth/v0.24.3) (2026-11-05)
 
 
