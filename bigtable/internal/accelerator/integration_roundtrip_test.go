@@ -22,6 +22,7 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -33,6 +34,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -438,10 +441,10 @@ func retryTransient(ctx context.Context, fn func() error) error {
 	return err
 }
 
-// startRoundTripServer boots an Server backed by channel on a temp
+// startRoundTripServer boots a Server backed by channel on a temp
 // UDS and returns a connected real gRPC client conn. Teardown is registered
 // via t.Cleanup.
-func startRoundTripServer(t *testing.T, channel *Channel) *grpc.ClientConn {
+func startRoundTripServer(t *testing.T, channel channelConn) *grpc.ClientConn {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "accelerator-roundtrip-*")
@@ -463,6 +466,253 @@ func startRoundTripServer(t *testing.T, channel *Channel) *grpc.ClientConn {
 	}
 	t.Cleanup(func() { conn.Close() })
 	return conn
+}
+
+// TestAcceleratorFallback_RoundTrip_Prod verifies that FallbackChannel handles
+// both single-row operations and multi-row ReadRows (which Channel rejects with
+// Unimplemented, routing transparently to the classic bigtable.Client).
+func TestAcceleratorFallback_RoundTrip_Prod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in -short mode")
+	}
+	project, instance, appProfile, channelOpts, adminOpts := resolveIT(t)
+	ctx := context.Background()
+
+	adminClient, err := bigtable.NewAdminClient(ctx, project, instance, adminOpts...)
+	if err != nil {
+		t.Fatalf("NewAdminClient: %v", err)
+	}
+	defer adminClient.Close()
+
+	tableName := fmt.Sprintf("accel-fb-%d", time.Now().UnixNano())
+	if err := boundedDo(ctx, func(c context.Context) error {
+		return adminClient.CreateTable(c, tableName)
+	}); err != nil {
+		t.Fatalf("CreateTable(%s): %v", tableName, err)
+	}
+	defer func() {
+		_ = boundedDo(context.Background(), func(c context.Context) error {
+			return adminClient.DeleteTable(c, tableName)
+		})
+	}()
+	if err := boundedDo(ctx, func(c context.Context) error {
+		return adminClient.CreateColumnFamily(c, tableName, prodColumnFamilies[0])
+	}); err != nil {
+		t.Fatalf("CreateColumnFamily: %v", err)
+	}
+
+	fullTableName := fmt.Sprintf("projects/%s/instances/%s/tables/%s", project, instance, tableName)
+	channel, err := NewChannel(ctx, project, instance, appProfile, "", channelOpts...)
+	if err != nil {
+		t.Fatalf("NewChannel: %v", err)
+	}
+	fc, err := NewFallbackChannel(ctx, channel, project, instance, appProfile, channelOpts...)
+	if err != nil {
+		channel.Close()
+		t.Fatalf("NewFallbackChannel: %v", err)
+	}
+	t.Cleanup(func() { fc.Close() })
+
+	conn := startRoundTripServer(t, fc)
+	client := btpb.NewBigtableClient(conn)
+
+	keys := [][]byte{[]byte("fb-row-1"), []byte("fb-row-2")}
+	for _, k := range keys {
+		if err := retryTransient(ctx, func() error {
+			return boundedDo(ctx, func(c context.Context) error {
+				_, err := client.MutateRow(c, &btpb.MutateRowRequest{
+					TableName: fullTableName,
+					RowKey:    k,
+					Mutations: []*btpb.Mutation{{Mutation: &btpb.Mutation_SetCell_{
+						SetCell: &btpb.Mutation_SetCell{
+							FamilyName:      prodColumnFamilies[0],
+							ColumnQualifier: []byte("q"),
+							TimestampMicros: 1000,
+							Value:           k,
+						},
+					}}},
+				})
+				return err
+			})
+		}); err != nil {
+			t.Fatalf("MutateRow(%s): %v", k, err)
+		}
+	}
+
+	// Issue a multi-key ReadRows request: Channel returns Unimplemented for >1
+	// key, so FallbackChannel must serve it via classic bigtable.Client.
+	var gotChunks []*btpb.ReadRowsResponse_CellChunk
+	if err := retryTransient(ctx, func() error {
+		return boundedDo(ctx, func(c context.Context) error {
+			stream, err := client.ReadRows(c, &btpb.ReadRowsRequest{
+				TableName: fullTableName,
+				Rows:      &btpb.RowSet{RowKeys: keys},
+			})
+			if err != nil {
+				return err
+			}
+			var chunks []*btpb.ReadRowsResponse_CellChunk
+			for {
+				resp, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return err
+				}
+				chunks = append(chunks, resp.Chunks...)
+			}
+			gotChunks = chunks
+			return nil
+		})
+	}); err != nil {
+		t.Fatalf("multi-key ReadRows via FallbackChannel: %v", err)
+	}
+	if len(gotChunks) != 2 {
+		t.Fatalf("multi-key ReadRows returned %d chunks, want 2", len(gotChunks))
+	}
+}
+
+// TestAcceleratorSubprocess_RoundTrip_Prod builds the real cmd binary, spawns
+// it as an OS subprocess, completes the stdin secret handshake, verifies
+// identity.json and Health/Check, executes a MutateRow + ReadRows round-trip
+// over UDS, and shuts down cleanly on stdin EOF.
+func TestAcceleratorSubprocess_RoundTrip_Prod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped in -short mode")
+	}
+	project, instance, appProfile, _, adminOpts := resolveIT(t)
+	ctx := context.Background()
+
+	adminClient, err := bigtable.NewAdminClient(ctx, project, instance, adminOpts...)
+	if err != nil {
+		t.Fatalf("NewAdminClient: %v", err)
+	}
+	defer adminClient.Close()
+
+	tableName := fmt.Sprintf("accel-subproc-%d", time.Now().UnixNano())
+	if err := boundedDo(ctx, func(c context.Context) error {
+		return adminClient.CreateTable(c, tableName)
+	}); err != nil {
+		t.Fatalf("CreateTable(%s): %v", tableName, err)
+	}
+	defer func() {
+		_ = boundedDo(context.Background(), func(c context.Context) error {
+			return adminClient.DeleteTable(c, tableName)
+		})
+	}()
+	if err := boundedDo(ctx, func(c context.Context) error {
+		return adminClient.CreateColumnFamily(c, tableName, prodColumnFamilies[0])
+	}); err != nil {
+		t.Fatalf("CreateColumnFamily: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	binPath := filepath.Join(tmpDir, "accelerator")
+	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build ./cmd: %v\n%s", err, out)
+	}
+
+	udsPath := filepath.Join(tmpDir, "daemon.sock")
+	args := []string{
+		"--uds-path", udsPath,
+		"--project", project,
+		"--instance", instance,
+		"--fallback",
+		"--user-agent", "go-it-test/1.0",
+	}
+	if appProfile != "" {
+		args = append(args, "--app-profile", appProfile)
+	}
+	if de := firstNonEmpty(*itDataEndpoint, os.Getenv("GCLOUD_TESTS_BIGTABLE_DATA_ENDPOINT")); de != "" {
+		args = append(args, "--data-endpoint", de)
+	}
+	if ud := os.Getenv("GCLOUD_TESTS_BIGTABLE_UNIVERSE_DOMAIN"); ud != "" {
+		args = append(args, "--universe-domain", ud)
+	}
+
+	proc := exec.Command(binPath, args...)
+	stdinPipe, err := proc.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+	if err := proc.Start(); err != nil {
+		t.Fatalf("proc.Start: %v", err)
+	}
+	defer func() {
+		if proc.Process != nil {
+			_ = proc.Process.Kill()
+		}
+	}()
+
+	const secret = "it-subprocess-secret"
+	if _, err := io.WriteString(stdinPipe, secret+"\n"); err != nil {
+		t.Fatalf("WriteString secret: %v", err)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(udsPath); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if _, err := os.Stat(udsPath); err != nil {
+		t.Fatalf("daemon did not bind UDS within 15s: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "identity.json")); err != nil {
+		t.Fatalf("identity.json missing after UDS bind: %v", err)
+	}
+
+	conn, err := grpc.NewClient("unix:"+udsPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer conn.Close()
+
+	authCtx := metadata.NewOutgoingContext(ctx, metadata.Pairs("x-accelerator-token", secret))
+	hc := healthpb.NewHealthClient(conn)
+	if err := boundedDo(authCtx, func(c context.Context) error {
+		resp, err := hc.Check(c, &healthpb.HealthCheckRequest{})
+		if err != nil {
+			return err
+		}
+		if resp.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+			return fmt.Errorf("Health.Check status = %v, want SERVING", resp.GetStatus())
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Health.Check: %v", err)
+	}
+
+	client := btpb.NewBigtableClient(conn)
+	fullTableName := fmt.Sprintf("projects/%s/instances/%s/tables/%s", project, instance, tableName)
+	key := []byte("subproc-row-1")
+	if err := retryTransient(authCtx, func() error {
+		return boundedDo(authCtx, func(c context.Context) error {
+			_, err := client.MutateRow(c, &btpb.MutateRowRequest{
+				TableName: fullTableName,
+				RowKey:    key,
+				Mutations: []*btpb.Mutation{{Mutation: &btpb.Mutation_SetCell_{
+					SetCell: &btpb.Mutation_SetCell{
+						FamilyName:      prodColumnFamilies[0],
+						ColumnQualifier: []byte("q"),
+						TimestampMicros: 1000,
+						Value:           []byte("val"),
+					},
+				}}},
+			})
+			return err
+		})
+	}); err != nil {
+		t.Fatalf("MutateRow: %v", err)
+	}
+
+	_ = stdinPipe.Close()
+	if err := proc.Wait(); err != nil {
+		t.Fatalf("daemon exited with error after stdin EOF: %v", err)
+	}
 }
 
 // reassembleRow inverts ReadRowResponseAdapter.Adapt: it rebuilds a Row from
