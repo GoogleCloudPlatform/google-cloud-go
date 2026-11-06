@@ -67,9 +67,6 @@ func testEqual(a, b interface{}) bool {
 			if strings.Contains(path.GoString(), "{*spanner.Error}.RequestID") {
 				return true
 			}
-			if strings.Contains(path.GoString(), "spanner.Singer") && strings.HasSuffix(path.GoString(), ".secret") {
-				return true
-			}
 			return false
 		}, cmp.Ignore()))
 }

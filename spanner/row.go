@@ -490,7 +490,7 @@ func SelectAll(rows rowIterator, destination interface{}, options ...DecodeOptio
 			if isFirstRow {
 				isFirstRow = false
 				fieldTag = make(map[string]fieldInfo, len(row.fields))
-				initFieldTag(itemType, fieldTag, nil)
+				initFieldTag(itemType, fieldTag, nil, nil)
 			}
 			if pointers, err = structPointers(sliceItem.Elem(), row.fields, fieldTag, s.Lenient); err != nil {
 				return err
@@ -553,7 +553,13 @@ func structPointers(sliceItem reflect.Value, cols []*sppb.StructType_Field, fiel
 }
 
 // Initialization the tags from struct.
-func initFieldTag(t reflect.Type, fieldTagMap map[string]fieldInfo, path []int) {
+func initFieldTag(t reflect.Type, fieldTagMap map[string]fieldInfo, path []int, visited map[reflect.Type]bool) {
+	if visited == nil {
+		visited = make(map[reflect.Type]bool)
+	}
+	visited[t] = true
+	defer func() { delete(visited, t) }()
+
 	for i := 0; i < t.NumField(); i++ {
 		fieldType := t.Field(i)
 		exported := (fieldType.PkgPath == "")
@@ -573,7 +579,9 @@ func initFieldTag(t reflect.Type, fieldTagMap map[string]fieldInfo, path []int) 
 			fieldTypeType = fieldTypeType.Elem()
 		}
 		if name == "" && fieldType.Anonymous && fieldTypeType.Kind() == reflect.Struct {
-			initFieldTag(fieldTypeType, fieldTagMap, currentPath)
+			if !visited[fieldTypeType] {
+				initFieldTag(fieldTypeType, fieldTagMap, currentPath, visited)
+			}
 			continue
 		}
 		if !exported {
