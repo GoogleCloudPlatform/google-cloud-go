@@ -259,7 +259,9 @@ func TestDefaultBufferPoolShrinksToWorkingSet(t *testing.T) {
 func TestDefaultBufferPoolCleanerLifecycle(t *testing.T) {
 	p := newDefaultBufferPool()
 	p.blockSize = testBlockSize
-	p.idleTimeout = time.Millisecond
+	// Long enough that the cleaner does not evict the only block and exit
+	// before the test checks that it is running.
+	p.idleTimeout = 10 * time.Millisecond
 	defer p.close()
 
 	if p.isCleanerRunning() {

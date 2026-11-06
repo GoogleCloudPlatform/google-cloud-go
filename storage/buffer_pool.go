@@ -31,7 +31,7 @@ const (
 	poolIdleTimeout = 30 * time.Second
 )
 
-var errInvalidBufferSize = errors.New("storage: buffer pool: maxSize must be positive")
+var errInvalidBufferSize = errors.New("storage: buffer pool maxSize must be positive")
 
 // defaultBufferPool is the BufferPool used for parallel uploads when the
 // application does not provide one through experimental.WithBufferPool.
@@ -73,8 +73,7 @@ func newDefaultBufferPool() *defaultBufferPool {
 }
 
 // Get returns a buffer of min(maxSize, blockSize) bytes, reusing a cached
-// block or allocating one. It never blocks and only fails if maxSize is not
-// positive.
+// block or allocating one.
 func (p *defaultBufferPool) Get(maxSize int) ([]byte, error) {
 	if maxSize <= 0 {
 		return nil, errInvalidBufferSize
