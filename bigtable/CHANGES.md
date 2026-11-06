@@ -1,5 +1,31 @@
 # Changes
 
+## [1.59.0](https://github.com/googleapis/google-cloud-go/compare/bigtable/v1.58.0...bigtable/v1.59.0) (2026-11-06)
+
+
+### Features
+
+* **bigtable:** Add classic-path fallback to accelerator daemon ([#20598](https://github.com/googleapis/google-cloud-go/issues/20598)) ([9b5aebf](https://github.com/googleapis/google-cloud-go/commit/9b5aebf41b5f3d24c9176af4a410583de1efbc89))
+* **bigtable:** Expose Metadata on PreparedStatement for 0-row queries ([#20825](https://github.com/googleapis/google-cloud-go/issues/20825)) ([719cfa3](https://github.com/googleapis/google-cloud-go/commit/719cfa333dab86aa3666f2b473078bc73e7833c6))
+* Update API sources and regenerate ([#20607](https://github.com/googleapis/google-cloud-go/issues/20607)) ([395fc59](https://github.com/googleapis/google-cloud-go/commit/395fc59e067ed2576a1c8c961edf3f749633520c))
+* Update API sources and regenerate ([#20646](https://github.com/googleapis/google-cloud-go/issues/20646)) ([4ad5d50](https://github.com/googleapis/google-cloud-go/commit/4ad5d50aaf4392d19fd391ee71eec1c5029ecd1d))
+* Update API sources and regenerate ([#20728](https://github.com/googleapis/google-cloud-go/issues/20728)) ([ab1da9d](https://github.com/googleapis/google-cloud-go/commit/ab1da9d200416594ae18fa7a2944961f1c92c928))
+
+
+### Bug Fixes
+
+* Adds additional validation for REST RPC requests ([#20753](https://github.com/googleapis/google-cloud-go/issues/20753)) ([7827181](https://github.com/googleapis/google-cloud-go/commit/7827181e7cb653fb69645c538b162b2c7490b0bb))
+* **bigtable:** Align accelerator fallback and checkout error codes ([#20853](https://github.com/googleapis/google-cloud-go/issues/20853)) ([cfa4d42](https://github.com/googleapis/google-cloud-go/commit/cfa4d42a9b3819cc19fc9058fb7c8e5cc1a9d2f1))
+* **bigtable:** Allow unnamed struct fields in StructSQLType.typeProto ([#20823](https://github.com/googleapis/google-cloud-go/issues/20823)) ([d085338](https://github.com/googleapis/google-cloud-go/commit/d085338d003514c64a457aca5046d06032721b8a))
+* **bigtable:** Hold session budget slot until OpenSession handshake c… ([#20688](https://github.com/googleapis/google-cloud-go/issues/20688)) ([a9a05e0](https://github.com/googleapis/google-cloud-go/commit/a9a05e0dc5b806d7aceddb2a54a9848d778eb074))
+* **bigtable:** Initialize query metadata on prepare and refresh ([#20803](https://github.com/googleapis/google-cloud-go/issues/20803)) ([f5a4667](https://github.com/googleapis/google-cloud-go/commit/f5a4667e5751807127f628254d5abddd6ae5cbb3))
+* **bigtable:** Only surface partial cluster failure in UpdateInstanceAndSyncClusters when relevant ([#20629](https://github.com/googleapis/google-cloud-go/issues/20629)) ([7660eab](https://github.com/googleapis/google-cloud-go/commit/7660eabfab30f7a9c8216694568da14fd5d6f64a))
+* **bigtable:** Pass ResumeToken on ExecuteQuery retries and detect mid-batch EOF ([#20826](https://github.com/googleapis/google-cloud-go/issues/20826)) ([8aa1b70](https://github.com/googleapis/google-cloud-go/commit/8aa1b7010fe4fc8b6a47c8c060c97524fec002bc))
+* **bigtable:** Prevent principalFromCreds GCE fallthrough on non-email JSON ([#20787](https://github.com/googleapis/google-cloud-go/issues/20787)) ([2769188](https://github.com/googleapis/google-cloud-go/commit/27691888bf916082f498776659cbe092df30a983))
+* **bigtable:** Raise the accelerator's gRPC message size limits to match the classic client ([#20723](https://github.com/googleapis/google-cloud-go/issues/20723)) ([a279d2a](https://github.com/googleapis/google-cloud-go/commit/a279d2a0101b61aa498c87c4187cefafd0a1dbd6))
+* **bigtable:** Support SQL NULL keys in MAP result columns ([#20824](https://github.com/googleapis/google-cloud-go/issues/20824)) ([f83b3c0](https://github.com/googleapis/google-cloud-go/commit/f83b3c064ecb50f5adeec683098a3ed7c2fe6914))
+* **bigtable:** Write credential type to accelerator identity.json ([#20801](https://github.com/googleapis/google-cloud-go/issues/20801)) ([af5a24c](https://github.com/googleapis/google-cloud-go/commit/af5a24cb2df3eb31220970d85fa81da8572a8aa3))
+
 ## [1.58.0](https://github.com/googleapis/google-cloud-go/compare/bigtable/v1.57.0...bigtable/v1.58.0) (2026-09-25)
 
 
