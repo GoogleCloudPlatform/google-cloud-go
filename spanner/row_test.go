@@ -2394,6 +2394,24 @@ func TestSelectAll(t *testing.T) {
 		Address
 		BirthDate civil.Date
 	}
+	type Singer struct {
+		ID     int64 `spanner:"-"`
+		RealID int64 `spanner:"ID"`
+		Name   string
+		*Address
+	}
+	type BaseShadow struct {
+		ID   int64
+		Name int64
+	}
+	type DerivedShadow struct {
+		Name string
+		BaseShadow
+	}
+	type PersonIgnoredEmbed struct {
+		Name    string
+		Address `spanner:"-"`
+	}
 
 	tests := []struct {
 		name      string
@@ -2896,6 +2914,120 @@ func TestSelectAll(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "success: reversed column order, tag precedence, ignore tag, and nil embedded pointer with WithLenient",
+			args: args{
+				destination: &[]*Singer{},
+				options:     []DecodeOptions{WithLenient()},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+							{Name: "City", Type: stringType()},
+							{Name: "UnknownCol", Type: stringType()},
+						},
+						[]*proto3.Value{stringProto("alice"), intProto(1), stringProto("NYC"), stringProto("ignored")},
+					},
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+						},
+						[]*proto3.Value{stringProto("bob"), intProto(2)},
+					},
+					iterator.Done,
+				),
+			},
+			want: &[]*Singer{
+				{RealID: 1, Name: "alice"},
+				{RealID: 2, Name: "bob"},
+			},
+		},
+		{
+			name: "success: nil embedded struct pointer decoded directly without WithLenient",
+			args: args{
+				destination: &[]*Singer{},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+						},
+						[]*proto3.Value{stringProto("bob"), intProto(2)},
+					},
+					iterator.Done,
+				),
+			},
+			want: &[]*Singer{
+				{
+					RealID: 2,
+					Name:   "bob",
+				},
+			},
+		},
+		{
+			name: "success: ignore tag on embedded struct is respected with WithLenient",
+			args: args{
+				destination: &[]PersonIgnoredEmbed{},
+				options:     []DecodeOptions{WithLenient()},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "City", Type: stringType()},
+						},
+						[]*proto3.Value{stringProto("alice"), stringProto("NYC")},
+					},
+					iterator.Done,
+				),
+			},
+			want: &[]PersonIgnoredEmbed{
+				{Name: "alice"},
+			},
+		},
+		{
+			name: "success: outer struct field dominates embedded struct field of same name",
+			args: args{
+				destination: &[]*DerivedShadow{},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+						},
+						[]*proto3.Value{stringProto("alice"), intProto(1)},
+					},
+					&Row{
+						[]*sppb.StructType_Field{
+							{Name: "Name", Type: stringType()},
+							{Name: "ID", Type: intType()},
+						},
+						[]*proto3.Value{stringProto("bob"), intProto(2)},
+					},
+					iterator.Done,
+				),
+			},
+			want: &[]*DerivedShadow{
+				{Name: "alice", BaseShadow: BaseShadow{ID: 1}},
+				{Name: "bob", BaseShadow: BaseShadow{ID: 2}},
+			},
+		},
+		{
+			name: "failure: nil column field metadata returns error instead of panicking",
+			args: args{
+				destination: &[]*Singer{},
+				mock: newMockIterator(
+					&Row{
+						[]*sppb.StructType_Field{nil},
+						[]*proto3.Value{intProto(1)},
+					},
+					iterator.Done,
+				),
+			},
+			want:    &[]*Singer{},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2927,4 +3059,54 @@ func float32Pointer(f float32) *float32 {
 
 func float64Pointer(f float64) *float64 {
 	return &f
+}
+
+func TestRecursiveEmbeddedPointerStruct(t *testing.T) {
+	type RecursiveNode struct {
+		ID int64
+		*RecursiveNode
+	}
+
+	row := &Row{
+		fields: []*sppb.StructType_Field{
+			{Name: "ID", Type: intType()},
+		},
+		vals: []*proto3.Value{intProto(42)},
+	}
+
+	// 1. ToStruct
+	var node1 RecursiveNode
+	if err := row.ToStruct(&node1); err != nil {
+		t.Fatalf("ToStruct failed: %v", err)
+	}
+	if node1.ID != 42 {
+		t.Errorf("ToStruct got ID %d, want 42", node1.ID)
+	}
+
+	// 2. ToStructLenient
+	var node2 RecursiveNode
+	if err := row.ToStructLenient(&node2); err != nil {
+		t.Fatalf("ToStructLenient failed: %v", err)
+	}
+	if node2.ID != 42 {
+		t.Errorf("ToStructLenient got ID %d, want 42", node2.ID)
+	}
+
+	// 3. SelectAll
+	var nodes []*RecursiveNode
+	mockIter := newMockIterator(
+		&Row{
+			fields: []*sppb.StructType_Field{
+				{Name: "ID", Type: intType()},
+			},
+			vals: []*proto3.Value{intProto(101)},
+		},
+		iterator.Done,
+	)
+	if err := SelectAll(mockIter, &nodes); err != nil {
+		t.Fatalf("SelectAll failed: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != 101 {
+		t.Errorf("SelectAll got %+v, want 1 node with ID 101", nodes)
+	}
 }

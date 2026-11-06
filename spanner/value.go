@@ -4763,8 +4763,18 @@ func decodeStructArray(ty *sppb.StructType, pb *proto3.ListValue, ptr interface{
 }
 
 func getAllFieldNames(v reflect.Value) []string {
+	return getAllFieldNamesWithVisited(v, nil)
+}
+
+func getAllFieldNamesWithVisited(v reflect.Value, visited map[reflect.Type]bool) []string {
 	var names []string
 	typeOfT := v.Type()
+	if visited == nil {
+		visited = make(map[reflect.Type]bool)
+	}
+	visited[typeOfT] = true
+	defer func() { delete(visited, typeOfT) }()
+
 	for i := 0; i < v.NumField(); i++ {
 		f := v.Field(i)
 		fieldType := typeOfT.Field(i)
@@ -4775,9 +4785,21 @@ func getAllFieldNames(v reflect.Value) []string {
 		if !exported && !fieldType.Anonymous {
 			continue
 		}
-		if f.Kind() == reflect.Struct {
-			if fieldType.Anonymous {
-				names = append(names, getAllFieldNames(reflect.ValueOf(f.Interface()))...)
+		fType := fieldType.Type
+		if fType.Kind() == reflect.Ptr {
+			fType = fType.Elem()
+		}
+		if fieldType.Anonymous && fType.Kind() == reflect.Struct {
+			if !visited[fType] {
+				elemVal := f
+				if f.Kind() == reflect.Ptr {
+					if f.IsNil() {
+						elemVal = reflect.New(fType).Elem()
+					} else {
+						elemVal = f.Elem()
+					}
+				}
+				names = append(names, getAllFieldNamesWithVisited(elemVal, visited)...)
 			}
 			continue
 		}

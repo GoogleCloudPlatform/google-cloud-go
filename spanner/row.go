@@ -511,6 +511,9 @@ func SelectAll(rows rowIterator, destination interface{}, options ...DecodeOptio
 				orderedPointers = make([]interface{}, len(row.fields))
 			}
 			for i, col := range row.fields {
+				if col == nil {
+					return errNilColType(i)
+				}
 				idx, ok := pointerLookup[strings.ToLower(col.GetName())]
 				if !ok {
 					if !s.Lenient {
@@ -574,6 +577,7 @@ func SelectAll(rows rowIterator, destination interface{}, options ...DecodeOptio
 type fieldInfo struct {
 	value     reflect.Value
 	indexPath []int
+	tagged    bool
 }
 
 func structPointers(sliceItem reflect.Value, cols []*sppb.StructType_Field, lenient bool) ([]interface{}, [][]int, map[string]int, error) {
@@ -584,22 +588,17 @@ func structPointers(sliceItem reflect.Value, cols []*sppb.StructType_Field, leni
 	lookup := make(map[string]int, len(cols))
 
 	for i, colName := range cols {
+		if colName == nil {
+			return nil, nil, nil, errNilColType(i)
+		}
 		if colName.Name == "" {
 			return nil, nil, nil, errColNotFound(fmt.Sprintf("column %d", i))
 		}
 
 		var info fieldInfo
 		var ok bool
-		if info, ok = fieldTag[strings.ToLower(colName.GetName())]; !ok {
-			if !lenient {
-				return nil, nil, nil, errNoOrDupGoField(sliceItem, colName.GetName())
-			}
-			if structField, okField := sliceItem.Type().FieldByName(colName.GetName()); okField {
-				fieldVal := sliceItem.FieldByIndex(structField.Index)
-				if fieldVal.CanSet() {
-					info = fieldInfo{value: fieldVal, indexPath: append([]int(nil), structField.Index...)}
-				}
-			}
+		if info, ok = fieldTag[strings.ToLower(colName.GetName())]; !ok && !lenient {
+			return nil, nil, nil, errNoOrDupGoField(sliceItem, colName.GetName())
 		}
 
 		if !info.value.IsValid() || !info.value.CanSet() {
@@ -629,25 +628,35 @@ func initFieldTag(sliceItem reflect.Value, fieldTagMap *map[string]fieldInfo, pa
 		if !exported && !fieldType.Anonymous {
 			continue
 		}
-		currentPath := append(path, i)
-		if fieldType.Type.Kind() == reflect.Struct {
-			// found an embedded struct
-			if fieldType.Anonymous {
-				sliceItemOfAnonymous := sliceItem.Field(i)
-				initFieldTag(sliceItemOfAnonymous, fieldTagMap, currentPath)
-				continue
-			}
-		}
 		name, keep, _, _ := spannerTagParser(fieldType.Tag)
 		if !keep {
 			continue
 		}
+		currentPath := append(path, i)
+		if name == "" && fieldType.Anonymous && fieldType.Type.Kind() == reflect.Struct {
+			// found an embedded struct
+			sliceItemOfAnonymous := sliceItem.Field(i)
+			initFieldTag(sliceItemOfAnonymous, fieldTagMap, currentPath)
+			continue
+		}
+		if !exported {
+			continue
+		}
+		tagged := name != ""
 		if name == "" {
 			name = fieldType.Name
 		}
-		(*fieldTagMap)[strings.ToLower(name)] = fieldInfo{
+		key := strings.ToLower(name)
+		if existing, exists := (*fieldTagMap)[key]; exists {
+			if len(existing.indexPath) < len(currentPath) ||
+				(len(existing.indexPath) == len(currentPath) && existing.tagged && !tagged) {
+				continue
+			}
+		}
+		(*fieldTagMap)[key] = fieldInfo{
 			value:     sliceItem.Field(i),
 			indexPath: append([]int(nil), currentPath...),
+			tagged:    tagged,
 		}
 	}
 }
