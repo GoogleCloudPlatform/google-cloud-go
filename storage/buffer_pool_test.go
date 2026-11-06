@@ -17,7 +17,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"math"
 	"runtime"
 	"slices"
 	"sync"
@@ -31,7 +30,7 @@ import (
 const testBlockSize = 1024
 
 // newTestBufferPool returns a pool with small blocks and an idle timeout long
-// enough that the cleaner never ticks; tests drive shrinkIfIdle directly.
+// enough that the cleaner never ticks; tests drive shrinkUnused directly.
 func newTestBufferPool(t *testing.T) *defaultBufferPool {
 	t.Helper()
 	p := newDefaultBufferPool()
@@ -53,10 +52,11 @@ func waitFor(tb testing.TB, desc string, cond func() bool) {
 	}
 }
 
-// waitIdle waits for any background refill to finish.
-func waitIdle(tb testing.TB, p *defaultBufferPool) {
-	tb.Helper()
-	waitFor(tb, "refill to finish", func() bool { return !p.refilling.Load() })
+// cached returns the number of cached blocks.
+func (p *defaultBufferPool) cached() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.free)
 }
 
 func (p *defaultBufferPool) isCleanerRunning() bool {
@@ -98,7 +98,6 @@ func TestDefaultBufferPoolGetSizes(t *testing.T) {
 		}
 		p.Put(b)
 		p.Put(b2)
-		waitIdle(t, p)
 	}
 }
 
@@ -115,7 +114,8 @@ func TestDefaultBufferPoolInvalidSize(t *testing.T) {
 }
 
 // The default pool has no memory limit, so TryGet succeeds even on a cold
-// pool and never throttles parallel segments.
+// pool and never throttles parallel segments. Nothing is allocated ahead of
+// time.
 func TestDefaultBufferPoolTryGetNeverRefuses(t *testing.T) {
 	p := newTestBufferPool(t)
 	for i := 0; i < 10; i++ {
@@ -123,66 +123,8 @@ func TestDefaultBufferPoolTryGetNeverRefuses(t *testing.T) {
 			t.Fatalf("TryGet #%d = %v, %v; want true, nil", i, ok, err)
 		}
 	}
-}
-
-func TestDefaultBufferPoolBlocksFor(t *testing.T) {
-	p := newTestBufferPool(t)
-	for _, tc := range []struct {
-		size int
-		want int
-	}{
-		{1, 1},
-		{testBlockSize - 1, 1},
-		{testBlockSize, 1},
-		{testBlockSize + 1, 2},
-		{3 * testBlockSize, 3},
-		// Must not overflow for very large sizes.
-		{math.MaxInt, 1 + (math.MaxInt-1)/testBlockSize},
-	} {
-		if got := p.blocksFor(tc.size); got != tc.want {
-			t.Errorf("blocksFor(%d) = %d, want %d", tc.size, got, tc.want)
-		}
-	}
-}
-
-// Refill pre-allocates only the spare blocks a part still needs beyond the
-// block just handed out, capped at poolMaxRefillBlocks.
-func TestDefaultBufferPoolRefill(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		maxSize    int
-		wantCached int
-	}{
-		{"single-block part", testBlockSize, 0},
-		{"two-block part", 2 * testBlockSize, 1},
-		{"three-block part", 3 * testBlockSize, 2},
-		{"capped", 10 * testBlockSize, poolMaxRefillBlocks},
-		{"huge maxSize", math.MaxInt, poolMaxRefillBlocks},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			p := newTestBufferPool(t)
-			b, err := p.Get(tc.maxSize)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(b) != min(tc.maxSize, testBlockSize) {
-				t.Errorf("Get(%d) len = %d", tc.maxSize, len(b))
-			}
-			waitIdle(t, p)
-			if got := p.cached(); got != tc.wantCached {
-				t.Errorf("cached = %d, want %d", got, tc.wantCached)
-			}
-			// No refill once enough spare blocks are cached.
-			if tc.wantCached > 0 {
-				p.Put(b)
-				if _, err := p.Get(tc.maxSize); err != nil {
-					t.Fatal(err)
-				}
-				if p.refilling.Load() {
-					t.Error("refill started although enough blocks were cached")
-				}
-			}
-		})
+	if got := p.cached(); got != 0 {
+		t.Errorf("cached = %d, want 0: nothing should be pre-allocated", got)
 	}
 }
 
@@ -254,42 +196,63 @@ func TestDefaultBufferPoolPutForeignBuffer(t *testing.T) {
 	}
 }
 
-func TestDefaultBufferPoolStagedEviction(t *testing.T) {
-	p := newTestBufferPool(t)
-	// Single-block Gets start no refill, so exactly 7 blocks get cached.
-	var bufs [][]byte
-	for i := 0; i < 7; i++ {
-		b, _ := p.Get(testBlockSize)
-		bufs = append(bufs, b)
+// cacheBlocks Gets n blocks and Puts them all back, so n blocks are cached and
+// minFree is reset to n.
+func cacheBlocks(t *testing.T, p *defaultBufferPool, n int) {
+	t.Helper()
+	bufs := make([][]byte, n)
+	for i := range bufs {
+		bufs[i], _ = p.Get(testBlockSize)
 	}
 	for _, b := range bufs {
 		p.Put(b)
 	}
-	if got := p.cached(); got != 7 {
-		t.Fatalf("cached = %d, want 7", got)
+	p.mu.Lock()
+	p.minFree = len(p.free)
+	p.mu.Unlock()
+	if got := p.cached(); got != n {
+		t.Fatalf("cached = %d, want %d", got, n)
 	}
+}
 
-	steps := []struct {
-		activity   bool
-		wantCached int
-		wantStop   bool
-		desc       string
-	}{
-		{false, 7, false, "tick after Put: pool was active, no eviction"},
-		{false, 3, false, "idle tick: halve"},
-		{true, 3, false, "tick after activity: no eviction"},
-		{false, 1, false, "idle tick: halve again"},
-		{false, 0, true, "idle tick: empty, cleaner stops"},
+// A fully idle pool halves its cache on every cleaner run.
+func TestDefaultBufferPoolStagedEviction(t *testing.T) {
+	p := newTestBufferPool(t)
+	cacheBlocks(t, p, 7)
+	for _, want := range []int{3, 1, 0} {
+		stopped := p.shrinkUnused()
+		if got := p.cached(); got != want || stopped != (want == 0) {
+			t.Fatalf("cached=%d stopped=%v, want cached=%d stopped=%v", got, stopped, want, want == 0)
+		}
 	}
-	for _, s := range steps {
-		if s.activity {
-			b, _ := p.Get(testBlockSize)
-			p.Put(b)
+}
+
+// Blocks that stay cached while a smaller working set is reused are evicted
+// down to that working set, even though the pool is never idle.
+func TestDefaultBufferPoolShrinksToWorkingSet(t *testing.T) {
+	p := newTestBufferPool(t)
+	cacheBlocks(t, p, 10)
+	// Each interval, one writer reuses a single block, so the bottom blocks
+	// are never touched.
+	for _, want := range []int{5, 3, 2, 1, 1} {
+		b, _ := p.Get(testBlockSize)
+		p.Put(b)
+		if p.shrinkUnused() {
+			t.Fatal("cleaner stopped while a block is still in use")
 		}
-		stopped := p.shrinkIfIdle()
-		if got := p.cached(); got != s.wantCached || stopped != s.wantStop {
-			t.Fatalf("%s: cached=%d stopped=%v, want cached=%d stopped=%v", s.desc, got, stopped, s.wantCached, s.wantStop)
+		if got := p.cached(); got != want {
+			t.Fatalf("cached = %d, want %d", got, want)
 		}
+	}
+	// Blocks held across a run are not counted as unused.
+	held, _ := p.Get(testBlockSize)
+	p.shrinkUnused()
+	if got := p.cached(); got != 0 {
+		t.Fatalf("cached = %d while the only block is held, want 0", got)
+	}
+	p.Put(held)
+	if got := p.cached(); got != 1 {
+		t.Fatalf("cached = %d after Put, want 1", got)
 	}
 }
 
@@ -303,7 +266,6 @@ func TestDefaultBufferPoolCleanerLifecycle(t *testing.T) {
 		t.Fatal("cleaner running before any block was cached")
 	}
 	b, _ := p.Get(testBlockSize)
-	waitIdle(t, p)
 	p.Put(b)
 	if !p.isCleanerRunning() {
 		t.Fatal("cleaner not started after a block was cached")
@@ -341,15 +303,12 @@ func TestDefaultBufferPoolClose(t *testing.T) {
 	if p.isCleanerRunning() {
 		t.Error("cleaner restarted by Put after close")
 	}
-	// Get and TryGet still work but must not start a refill.
+	// Get and TryGet still work.
 	if _, ok, err := p.TryGet(4 * testBlockSize); !ok || err != nil {
 		t.Errorf("TryGet after close = %v, %v; want true, nil", ok, err)
 	}
 	if _, err := p.Get(4 * testBlockSize); err != nil {
 		t.Errorf("Get after close: %v", err)
-	}
-	if p.refilling.Load() {
-		t.Error("refill started after close")
 	}
 }
 
@@ -397,7 +356,7 @@ func TestDefaultBufferPoolConcurrency(t *testing.T) {
 	wg.Wait()
 
 	waitFor(t, "cleaner to drain the pool", func() bool {
-		return p.cached() == 0 && !p.refilling.Load() && !p.isCleanerRunning()
+		return p.cached() == 0 && !p.isCleanerRunning()
 	})
 }
 
@@ -416,9 +375,8 @@ func TestDefaultBufferPoolZeroAllocs(t *testing.T) {
 	}
 }
 
-// prewarm caches n blocks in p and waits for any refill to finish.
-func prewarm(tb testing.TB, p *defaultBufferPool, n int) {
-	tb.Helper()
+// prewarm caches n blocks in p.
+func prewarm(p *defaultBufferPool, n int) {
 	bufs := make([][]byte, n)
 	for i := range bufs {
 		bufs[i], _ = p.Get(p.blockSize)
@@ -426,18 +384,16 @@ func prewarm(tb testing.TB, p *defaultBufferPool, n int) {
 	for _, b := range bufs {
 		p.Put(b)
 	}
-	waitIdle(tb, p)
 }
 
 func BenchmarkDefaultBufferPoolSteadyState(b *testing.B) {
 	p := newDefaultBufferPool()
 	defer p.close()
-	// A multi-block part, so that refills are exercised.
+	// A multi-block part: one Get followed by TryGet for the rest.
 	const blocksPerPart = 4
 	const partSize = blocksPerPart * poolBlockSize
-	// Cache the blocks of one part plus the spares a refill keeps ready, so
-	// the timed loop never needs to grow the pool.
-	prewarm(b, p, blocksPerPart+poolMaxRefillBlocks)
+	// Cache one part's blocks so the timed loop never grows the pool.
+	prewarm(p, blocksPerPart)
 
 	held := make([][]byte, 0, blocksPerPart)
 	b.ReportAllocs()
@@ -461,7 +417,7 @@ func BenchmarkDefaultBufferPoolParallel(b *testing.B) {
 	defer p.close()
 	// Warm the pool with enough blocks for every parallel goroutine so the
 	// timed loop measures steady state rather than pool growth.
-	prewarm(b, p, 2*runtime.GOMAXPROCS(0))
+	prewarm(p, 2*runtime.GOMAXPROCS(0))
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
