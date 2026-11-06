@@ -197,7 +197,7 @@ libraries:
     apis:
       - path: google/cloud/auditmanager/v1
   - name: auth
-    version: 0.24.3
+    version: 0.24.4
     keep:
       - README.md
       - internal/version.go
