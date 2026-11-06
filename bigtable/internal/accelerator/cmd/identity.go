@@ -59,7 +59,7 @@ func writeIdentity(udsPath, principal, credType string, scopes []string) error {
 	// The mode is a no-op on Windows, which has no POSIX bits; there the file
 	// inherits its directory's ACL, same as the socket beside it. That is
 	// acceptable because the document carries no secret -- only a principal
-	// email and scope list.
+	// email, credential type, and scope list.
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}

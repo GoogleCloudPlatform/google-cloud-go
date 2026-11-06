@@ -41,7 +41,7 @@ func TestIdentityFromCredsJSON(t *testing.T) {
 		},
 		{
 			name:      "impersonated_service_account",
-			in:        `{"type":"impersonated_service_account","service_account_impersonation_url":"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/target@proj.iam.gserviceaccount.com:generateAccessToken"}`,
+			in:        `{"type":"impersonated_service_account","service_account_impersonation_url":"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/target@proj.iam.gserviceaccount.com:generateAccessToken","source_credentials":{"type":"service_account","client_email":"source@proj.iam.gserviceaccount.com"}}`,
 			wantEmail: "target@proj.iam.gserviceaccount.com",
 			wantType:  "impersonated_service_account",
 		},

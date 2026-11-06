@@ -151,7 +151,7 @@ func main() {
 	identityCtx, cancelIdentity := context.WithTimeout(ctx, identityResolveTimeout)
 	principal, credType, err := identityFromCreds(identityCtx, creds)
 	if err != nil {
-		log.Printf("warning: principal resolution failed: %v", err)
+		log.Printf("warning: identity resolution failed: %v", err)
 	}
 	cancelIdentity()
 	// Record effectiveScopes (not the raw override), so identity.json reflects
