@@ -196,6 +196,15 @@ func TestDefaultBufferPoolPutForeignBuffer(t *testing.T) {
 	}
 }
 
+// resetMinFree sets minFree to the current cache size, as a cleaner run does.
+// Tests need it because Put only sets minFree when it starts the cleaner, so
+// Gets made while setting up a test would otherwise leave it lowered.
+func resetMinFree(p *defaultBufferPool) {
+	p.mu.Lock()
+	p.minFree = len(p.free)
+	p.mu.Unlock()
+}
+
 // cacheBlocks Gets n blocks and Puts them all back, so n blocks are cached and
 // minFree is reset to n.
 func cacheBlocks(t *testing.T, p *defaultBufferPool, n int) {
@@ -207,11 +216,7 @@ func cacheBlocks(t *testing.T, p *defaultBufferPool, n int) {
 	for _, b := range bufs {
 		p.Put(b)
 	}
-	// Put only sets minFree when it starts the cleaner, so the Gets above
-	// lowered it. Reset it as a cleaner run would.
-	p.mu.Lock()
-	p.minFree = len(p.free)
-	p.mu.Unlock()
+	resetMinFree(p)
 	if got := p.cached(); got != n {
 		t.Fatalf("cached = %d, want %d", got, n)
 	}
@@ -222,9 +227,9 @@ func TestDefaultBufferPoolStagedEviction(t *testing.T) {
 	p := newTestBufferPool(t)
 	cacheBlocks(t, p, 7)
 	for _, want := range []int{3, 1, 0} {
-		stopped := p.shrinkUnused()
-		if got := p.cached(); got != want || stopped != (want == 0) {
-			t.Fatalf("cached=%d stopped=%v, want cached=%d stopped=%v", got, stopped, want, want == 0)
+		drained := p.shrinkUnused()
+		if got := p.cached(); got != want || drained != (want == 0) {
+			t.Fatalf("cached=%d drained=%v, want cached=%d drained=%v", got, drained, want, want == 0)
 		}
 	}
 }
@@ -240,7 +245,7 @@ func TestDefaultBufferPoolShrinksToWorkingSet(t *testing.T) {
 		b, _ := p.Get(testBlockSize)
 		p.Put(b)
 		if p.shrinkUnused() {
-			t.Fatal("cleaner stopped while a block is still in use")
+			t.Fatal("pool drained while a block is still in use")
 		}
 		if got := p.cached(); got != want {
 			t.Fatalf("cached = %d, want %d", got, want)
@@ -458,6 +463,14 @@ func BenchmarkDefaultBufferPoolParallel(b *testing.B) {
 	})
 }
 
+// fakePool is a minimal experimental.BufferPool used to check that a custom
+// pool is passed through to the client.
+type fakePool struct{}
+
+func (*fakePool) Get(maxSize int) ([]byte, error)          { return make([]byte, maxSize), nil }
+func (*fakePool) TryGet(maxSize int) ([]byte, bool, error) { return make([]byte, maxSize), true, nil }
+func (*fakePool) Put([]byte)                               {}
+
 func TestGRPCClientBufferPool(t *testing.T) {
 	ctx := context.Background()
 	baseOpts := []option.ClientOption{
@@ -484,7 +497,7 @@ func TestGRPCClientBufferPool(t *testing.T) {
 	})
 
 	t.Run("custom", func(t *testing.T) {
-		custom := &struct{ experimental.BufferPool }{}
+		custom := &fakePool{}
 		opts := append(slices.Clone(baseOpts), experimental.WithBufferPool(custom))
 		c, err := newGRPCStorageClient(ctx, withClientOptions(opts...))
 		if err != nil {

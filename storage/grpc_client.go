@@ -398,7 +398,9 @@ func (c *grpcStorageClient) Close() error {
 		c.metricsCleanup()
 	}
 	// Only the SDK's own pool is closed; a pool provided through
-	// experimental.WithBufferPool is owned by the application.
+	// experimental.WithBufferPool is owned by the application. Writers still
+	// in flight may keep using a closed default pool: Get allocates a new
+	// block and Put drops it, which is safe.
 	if pool, ok := c.bufferPool.(*defaultBufferPool); ok {
 		pool.close()
 	}

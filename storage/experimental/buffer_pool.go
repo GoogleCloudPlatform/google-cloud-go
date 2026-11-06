@@ -29,6 +29,8 @@ type BufferPool interface {
 
 	// Put returns a previously acquired buffer to the pool.
 	// After calling Put, the caller must not retain, read, or write to the buffer.
-	// The exact slice returned by Get or TryGet must be passed back.
+	// The exact slice returned by Get or TryGet must be passed back, and Put must
+	// be called exactly once per buffer: putting a buffer twice lets the pool
+	// hand the same memory to two callers.
 	Put(buf []byte)
 }

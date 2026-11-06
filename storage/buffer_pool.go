@@ -80,13 +80,7 @@ func (p *defaultBufferPool) Get(maxSize int) ([]byte, error) {
 		return nil, errInvalidBufferSize
 	}
 	p.mu.Lock()
-	var b []byte
-	if n := len(p.free); n > 0 {
-		b = p.free[n-1]
-		p.free[n-1] = nil // Do not retain the block via the backing array.
-		p.free = p.free[:n-1]
-		p.minFree = min(p.minFree, len(p.free))
-	}
+	b := p.popLocked()
 	p.mu.Unlock()
 	if b == nil {
 		b = make([]byte, p.blockSize)
@@ -99,7 +93,10 @@ func (p *defaultBufferPool) Get(maxSize int) ([]byte, error) {
 // enforce one.
 func (p *defaultBufferPool) TryGet(maxSize int) ([]byte, bool, error) {
 	b, err := p.Get(maxSize)
-	return b, err == nil, err
+	if err != nil {
+		return nil, false, err
+	}
+	return b, true, nil
 }
 
 // Put returns a buffer obtained from Get or TryGet to the pool and starts the
@@ -125,6 +122,20 @@ func (p *defaultBufferPool) Put(buf []byte) {
 		p.wg.Add(1)
 		go p.runCleaner()
 	}
+}
+
+// popLocked removes and returns the top cached block, or nil if the cache is
+// empty, and lowers minFree to the new cache size. p.mu must be held.
+func (p *defaultBufferPool) popLocked() []byte {
+	n := len(p.free)
+	if n == 0 {
+		return nil
+	}
+	b := p.free[n-1]
+	p.free[n-1] = nil // Do not retain the block via the backing array.
+	p.free = p.free[:n-1]
+	p.minFree = min(p.minFree, len(p.free))
+	return b
 }
 
 // shrinkLocked drops cached blocks until keep remain. p.mu must be held. It
@@ -154,9 +165,9 @@ func (p *defaultBufferPool) runCleaner() {
 }
 
 // shrinkUnused evicts half (rounded up) of the blocks that stayed cached for
-// the whole interval since the previous call. It returns true, marking the
-// cleaner stopped, once the cache is empty.
-func (p *defaultBufferPool) shrinkUnused() (stopped bool) {
+// the whole interval since the previous call. It returns true once the cache
+// is drained, after marking the cleaner as not running so that it exits.
+func (p *defaultBufferPool) shrinkUnused() (drained bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	evict := (p.minFree + 1) / 2
