@@ -288,8 +288,7 @@ func TestDefaultBufferPoolCleanerLifecycle(t *testing.T) {
 	p.blockSize = testBlockSize
 	// Short, so the drain below finishes quickly, but long enough that the
 	// cleaner is unlikely to evict the only block and exit before the test
-	// checks it is running (a 1ms interval can elapse while the test
-	// goroutine is descheduled under -race).
+	// checks it is running.
 	p.cleanInterval = 10 * time.Millisecond
 	defer p.close()
 

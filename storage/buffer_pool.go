@@ -94,10 +94,9 @@ func (p *defaultBufferPool) Get(maxSize int) ([]byte, error) {
 	return b[:min(maxSize, p.blockSize)], nil
 }
 
-// TryGet behaves exactly like Get and never returns false. It exists because
-// BufferPool requires it: custom pools that enforce a memory limit return
-// false to make the uploader run fewer segments in parallel, but the default
-// pool has no limit, so it never refuses a buffer.
+// TryGet behaves exactly like Get. The default pool has no memory limit, so it
+// never refuses a buffer; returning false is reserved for custom pools that
+// enforce one.
 func (p *defaultBufferPool) TryGet(maxSize int) ([]byte, bool, error) {
 	b, err := p.Get(maxSize)
 	return b, err == nil, err
