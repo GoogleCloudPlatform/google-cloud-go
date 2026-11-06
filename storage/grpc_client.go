@@ -272,9 +272,9 @@ func newGRPCStorageClient(ctx context.Context, opts ...storageOption) (client *g
 		// that it sees the attempt span: both google.golang.org/api/transport/grpc
 		// (dial.go) and cloud.google.com/go/auth/grpctransport (grpctransport.go)
 		// add their otelgrpc handler before the caller's dial options.
-		// See retryAttemptStatsHandler.
+		// See attemptStatsHandler.
 		s.clientOption = append(s.clientOption,
-			option.WithGRPCDialOption(grpc.WithStatsHandler(retryAttemptStatsHandler{})))
+			option.WithGRPCDialOption(grpc.WithStatsHandler(attemptStatsHandler{})))
 	}
 	c.dpDiag = directPathDiagnostic(ctx, s.clientOption...)
 	g, err := gapic.NewClient(ctx, s.clientOption...)
@@ -1464,6 +1464,7 @@ func (c *grpcStorageClient) NewRangeReader(ctx context.Context, params *newRange
 				databufs: databufs,
 			}
 			err = decoder.readFullObjectResponse()
+			recordBidiReadPayload(stream, decoder, err)
 			return err
 		}
 
@@ -1989,7 +1990,9 @@ func (r *gRPCReader) recv() error {
 	}
 
 	r.currMsg = &readResponseDecoder{databufs: databufs}
-	return r.currMsg.readFullObjectResponse()
+	err = r.currMsg.readFullObjectResponse()
+	recordBidiReadPayload(r.stream, r.currMsg, err)
+	return err
 }
 
 // ReadObjectResponse field and subfield numbers.
