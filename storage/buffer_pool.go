@@ -26,9 +26,9 @@ const (
 	// minimum-sized part is backed by a single block.
 	poolBlockSize = 32 << 20
 
-	// poolIdleTimeout is how often the cleaner runs. Each run evicts half of
+	// poolCleanInterval is how often the cleaner runs. Each run evicts half of
 	// the cached blocks that were not used since the previous run.
-	poolIdleTimeout = 30 * time.Second
+	poolCleanInterval = 30 * time.Second
 )
 
 var errInvalidBufferSize = errors.New("storage: buffer pool maxSize must be positive")
@@ -40,17 +40,18 @@ var errInvalidBufferSize = errors.New("storage: buffer pool maxSize must be posi
 // pool has no memory limit; memory in use is bounded by the writers'
 // PartSize and Concurrency settings. Get and TryGet always succeed, reusing a
 // cached block or allocating one. A cleaner shrinks the cache toward the
-// blocks actually in use, halving the unused ones every idleTimeout.
+// blocks actually in use, halving the unused ones every cleanInterval.
 //
 // All methods are safe for concurrent use.
 type defaultBufferPool struct {
-	blockSize   int
-	idleTimeout time.Duration
+	blockSize     int
+	cleanInterval time.Duration
 
 	// mu guards the fields below.
 	mu sync.Mutex
-	// free is a LIFO stack of cached blocks, so the most recently used (and
-	// most likely CPU-cache-warm) block is reused first.
+	// free is a LIFO stack of cached blocks. Get and Put only touch the top,
+	// so the bottom minFree blocks are the ones left unused for a whole
+	// cleaner interval.
 	free [][]byte
 	// minFree is the smallest len(free) since the last cleaner run. The
 	// bottom minFree blocks were not used during that interval.
@@ -66,9 +67,9 @@ type defaultBufferPool struct {
 // newDefaultBufferPool returns an empty pool. It starts no goroutines.
 func newDefaultBufferPool() *defaultBufferPool {
 	return &defaultBufferPool{
-		blockSize:   poolBlockSize,
-		idleTimeout: poolIdleTimeout,
-		stop:        make(chan struct{}),
+		blockSize:     poolBlockSize,
+		cleanInterval: poolCleanInterval,
+		stop:          make(chan struct{}),
 	}
 }
 
@@ -93,8 +94,10 @@ func (p *defaultBufferPool) Get(maxSize int) ([]byte, error) {
 	return b[:min(maxSize, p.blockSize)], nil
 }
 
-// TryGet is Get. The default pool has no memory limit, so it never refuses a
-// buffer; returning false is reserved for custom pools that enforce one.
+// TryGet behaves exactly like Get and never returns false. It exists because
+// BufferPool requires it: custom pools that enforce a memory limit return
+// false to make the uploader run fewer segments in parallel, but the default
+// pool has no limit, so it never refuses a buffer.
 func (p *defaultBufferPool) TryGet(maxSize int) ([]byte, bool, error) {
 	b, err := p.Get(maxSize)
 	return b, err == nil, err
@@ -102,8 +105,10 @@ func (p *defaultBufferPool) TryGet(maxSize int) ([]byte, bool, error) {
 
 // Put returns a buffer obtained from Get or TryGet to the pool and starts the
 // cleaner if it is not running. Buffers whose capacity is not blockSize, and
-// buffers returned after close, are dropped. Put must be called exactly once
-// per buffer.
+// buffers returned after close, are dropped.
+//
+// Put must be called exactly once per buffer: putting a buffer twice caches it
+// twice, so two later Get callers would share, and corrupt, the same memory.
 func (p *defaultBufferPool) Put(buf []byte) {
 	if cap(buf) != p.blockSize {
 		return
@@ -113,7 +118,8 @@ func (p *defaultBufferPool) Put(buf []byte) {
 	if p.closed {
 		return
 	}
-	p.free = append(p.free, buf)
+	// Cache the block at full length; Get re-slices it to the caller's size.
+	p.free = append(p.free, buf[:p.blockSize])
 	if !p.cleanerRunning {
 		p.cleanerRunning = true
 		p.minFree = len(p.free)
@@ -122,17 +128,19 @@ func (p *defaultBufferPool) Put(buf []byte) {
 	}
 }
 
-// shrinkLocked drops cached blocks until keep remain. p.mu must be held.
+// shrinkLocked drops cached blocks until keep remain. p.mu must be held. It
+// drops from the top of the stack, which is fine because blocks are
+// interchangeable; only the count of unused blocks matters.
 func (p *defaultBufferPool) shrinkLocked(keep int) {
 	clear(p.free[keep:])
 	p.free = p.free[:keep]
 }
 
-// runCleaner calls shrinkUnused every idleTimeout until the cache is empty or
+// runCleaner calls shrinkUnused every cleanInterval until the cache is empty or
 // the pool is closed.
 func (p *defaultBufferPool) runCleaner() {
 	defer p.wg.Done()
-	t := time.NewTicker(p.idleTimeout)
+	t := time.NewTicker(p.cleanInterval)
 	defer t.Stop()
 	for {
 		select {

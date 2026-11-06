@@ -29,24 +29,24 @@ import (
 
 const testBlockSize = 1024
 
-// newTestBufferPool returns a pool with small blocks and an idle timeout long
-// enough that the cleaner never ticks; tests drive shrinkUnused directly.
+// newTestBufferPool returns a pool with small blocks and a clean interval long
+// enough that the cleaner never runs; tests call shrinkUnused directly.
 func newTestBufferPool(t *testing.T) *defaultBufferPool {
 	t.Helper()
 	p := newDefaultBufferPool()
 	p.blockSize = testBlockSize
-	p.idleTimeout = time.Hour
+	p.cleanInterval = time.Hour
 	t.Cleanup(p.close)
 	return p
 }
 
 // waitFor polls cond until it is true or the deadline expires.
-func waitFor(tb testing.TB, desc string, cond func() bool) {
-	tb.Helper()
+func waitFor(t *testing.T, desc string, cond func() bool) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
-			tb.Fatalf("timed out waiting for %s", desc)
+			t.Fatalf("timed out waiting for %s", desc)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -207,6 +207,8 @@ func cacheBlocks(t *testing.T, p *defaultBufferPool, n int) {
 	for _, b := range bufs {
 		p.Put(b)
 	}
+	// Put only sets minFree when it starts the cleaner, so the Gets above
+	// lowered it. Reset it as a cleaner run would.
 	p.mu.Lock()
 	p.minFree = len(p.free)
 	p.mu.Unlock()
@@ -256,12 +258,39 @@ func TestDefaultBufferPoolShrinksToWorkingSet(t *testing.T) {
 	}
 }
 
+// Blocks that enter the cache during an interval were in use for part of it,
+// so the next cleaner run must not evict them.
+func TestDefaultBufferPoolKeepsBlocksAddedMidInterval(t *testing.T) {
+	p := newTestBufferPool(t)
+	cacheBlocks(t, p, 2)
+	var held [][]byte
+	// Take both cached blocks (minFree drops to 0), then three fresh ones.
+	for i := 0; i < 5; i++ {
+		b, _ := p.Get(testBlockSize)
+		held = append(held, b)
+	}
+	for _, b := range held {
+		p.Put(b)
+	}
+	p.shrinkUnused()
+	if got := p.cached(); got != 5 {
+		t.Fatalf("cached = %d after first run, want 5 (nothing was unused all interval)", got)
+	}
+	// All five then sit unused for a full interval: evict ceil(5/2) = 3.
+	p.shrinkUnused()
+	if got := p.cached(); got != 2 {
+		t.Fatalf("cached = %d after second run, want 2", got)
+	}
+}
+
 func TestDefaultBufferPoolCleanerLifecycle(t *testing.T) {
 	p := newDefaultBufferPool()
 	p.blockSize = testBlockSize
-	// Long enough that the cleaner does not evict the only block and exit
-	// before the test checks that it is running.
-	p.idleTimeout = 10 * time.Millisecond
+	// Short, so the drain below finishes quickly, but long enough that the
+	// cleaner is unlikely to evict the only block and exit before the test
+	// checks it is running (a 1ms interval can elapse while the test
+	// goroutine is descheduled under -race).
+	p.cleanInterval = 10 * time.Millisecond
 	defer p.close()
 
 	if p.isCleanerRunning() {
@@ -324,7 +353,7 @@ func TestDefaultBufferPoolConcurrency(t *testing.T) {
 	)
 	p := newDefaultBufferPool()
 	p.blockSize = testBlockSize
-	p.idleTimeout = time.Millisecond
+	p.cleanInterval = time.Millisecond
 	defer p.close()
 
 	var wg sync.WaitGroup
