@@ -235,7 +235,7 @@ func NewSessionPoolImpl(id uint64, poolName string, streamFactory func(ctx conte
 		sl:                 newSessionList(),
 		debugEnabled:       debugEnabled,
 	}
-	pool.m.afePickCounts = make(map[AfeID]int64)
+	pool.m.afePickCounts = make(map[AfeID]afePickStat)
 
 	defaultCfg := defaultPoolConfig()
 	fetcher := func() *PoolStats { return pool.Stats() }
@@ -522,7 +522,9 @@ func (p *SessionPoolImpl) Invoke(ctx context.Context, desc VRpcDescriptor, req i
 	if err != nil {
 		// Record checkout failure so pool-exhaustion incidents show up
 		// in sessionz's slow-vRPC table and latency histograms.
-		p.recordCheckoutFailure(checkoutStart, desc, err)
+		if p.debugEnabled {
+			p.recordCheckoutFailure(checkoutStart, desc, err)
+		}
 		return InvokeResult{}, err
 	}
 	// poolWait is the queue-time spent inside CheckoutSession waiting
